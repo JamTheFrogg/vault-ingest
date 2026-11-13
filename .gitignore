@@ -1,0 +1,32 @@
+# secrets and local config
+.env
+companion.local.toml
+
+# environments and build output
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# runtime state
+state/
+
+# third-party binaries (see README / SETUP.md for where to get them)
+bin/*.exe
+
+# recordings and audio
+recordings/
+*.wav
+*.mp3
+*.m4a
+*.mp4
+*.mkv
+*.ogg
+*.flac
+*.aac
+*.opus
+*.webm

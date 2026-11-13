@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "obsidian": {
+      "command": "C:\\path\\to\\vault-ingest\\bin\\obsidian-mcp.exe",
+      "env": {
+        "OBSIDIAN_VAULT_PATH": "C:\\Users\\<you>\\Documents\\MyVault",
+        "OBSIDIAN_EMBEDDINGS": "true",
+        "OBSIDIAN_EXCLUDE_PATHS": "_System/backups/**,00_Inbox/**"
+      }
+    }
+  }
+}
