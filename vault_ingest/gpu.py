@@ -118,6 +118,15 @@ PATH_MARKERS = (
     "\\XboxGames\\",
 )
 DEFAULT_NAMES = ("ProjectZomboid64.exe",)
+# Programs that live in a game's folder but are not the game: crash reporters and anti-cheat services keep
+# running after the game is closed, and must not pause the GPU or mute call detection.
+DEFAULT_HELPERS = (
+    "crashpad_handler.exe", "crashpad_handler", "UnityCrashHandler64.exe", "UnityCrashHandler32.exe",
+    "CrashReportClient.exe", "CrashReporter.exe", "CrashHandler.exe", "BugSplatHD64.exe",
+    "EasyAntiCheat.exe", "EasyAntiCheat_EOS.exe", "start_protected_game.exe", "BEService.exe",
+    "BEService_x64.exe", "service.exe", "steamerrorreporter.exe", "steamerrorreporter64.exe",
+    "UE4PrereqSetup_x64.exe", "vc_redist.x64.exe", "dxsetup.exe",
+)
 DEFAULT_FULLSCREEN_IGNORE = (
     "chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe",
     "zoom.exe", "ms-teams.exe", "teams.exe", "meetily.exe",
@@ -149,6 +158,7 @@ class GpuRules:
     hotkey: str = "ctrl+alt+g"
     path_markers: tuple[str, ...] = PATH_MARKERS
     names: frozenset[str] = field(default_factory=lambda: frozenset(n.lower() for n in DEFAULT_NAMES))
+    helpers: frozenset[str] = field(default_factory=lambda: frozenset(n.lower() for n in DEFAULT_HELPERS))
     fullscreen_ignore: frozenset[str] = field(
         default_factory=lambda: frozenset(n.lower() for n in DEFAULT_FULLSCREEN_IGNORE))
 
@@ -159,6 +169,7 @@ def rules_from_toml(raw: dict | None) -> GpuRules:
     names = raw.get("names")
     ignore = raw.get("fullscreen_ignore")
     paths = raw.get("paths")
+    helpers = raw.get("helpers")
     return GpuRules(
         poll_seconds=float(raw.get("poll_seconds", defaults.poll_seconds)),
         resume_after_seconds=float(raw.get("resume_after_seconds", defaults.resume_after_seconds)),
@@ -166,6 +177,7 @@ def rules_from_toml(raw: dict | None) -> GpuRules:
         hotkey=str(raw.get("hotkey", defaults.hotkey) or ""),
         path_markers=tuple(paths) if paths else defaults.path_markers,
         names=frozenset(str(n).lower() for n in names) if names else defaults.names,
+        helpers=frozenset(str(n).lower() for n in helpers) if helpers is not None else defaults.helpers,
         fullscreen_ignore=frozenset(str(n).lower() for n in ignore) if ignore else defaults.fullscreen_ignore,
     )
 
@@ -201,16 +213,22 @@ def _norm_path(path: str) -> str:
 def detect_busy(procs: Iterable[Proc], foreground: Foreground | None, other_vram_mb: int | None,
                 ours_loaded: bool, rules: GpuRules, foreground_vram_mb: int | None = None) -> BusyHit | None:
     """The GPU counts as busy when a game, a fullscreen app on the GPU, or someone else's VRAM says so."""
+    from .desktop import proc_key
+
+    helpers = {proc_key(h) for h in rules.helpers}
+    names = {proc_key(n) for n in rules.names}
     for proc in procs:
         exe = _norm_path(proc.exe or "")
-        name = (proc.name or "").lower()
+        name = proc_key(proc.name or Path(proc.exe or "").name)
+        if name in helpers:
+            continue
         for marker in rules.path_markers:
             if _norm_path(marker) in exe:
                 return BusyHit(proc.name or Path(proc.exe).name or "a game", "path")
-        if name and name in rules.names:
+        if name and name in names:
             return BusyHit(proc.name, "name")
     if foreground is not None and foreground.covers_screen:
-        if (foreground.process or "").lower() not in rules.fullscreen_ignore:
+        if proc_key(foreground.process) not in {proc_key(n) for n in rules.fullscreen_ignore}:
             # A maximized everyday window is not a game. The process also has to be using the GPU.
             if foreground_vram_mb is not None and foreground_vram_mb > FULLSCREEN_VRAM_MB:
                 return BusyHit(foreground.process or "a fullscreen app", "fullscreen")
@@ -1033,7 +1051,7 @@ def show_toast(text: str, on_click: Callable[[], None] | None = None, *,
     del on_click  # clicks are handled in the child so this process never loads winrt
     try:
         subprocess.Popen(
-            [sys.executable, "-m", "vault_ingest.win_toast", text[:200], open_path or "", click_file or ""],
+            [sys.executable, "-m", "vault_ingest.notify", text[:200], open_path or "", click_file or ""],
             creationflags=_NO_WINDOW, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception as e:  # noqa: BLE001
@@ -1296,8 +1314,52 @@ class GpuService:
             return
         self._hotkeys = start_hotkeys({self.rules.hotkey: self.toggle})
 
+    def _tray_actions(self) -> list[tuple[str, Callable[[], None], bool] | None]:
+        """The menu, top to bottom. None is a separator."""
+        items: list = list(self.extra_menu)
+        if items:
+            items.append(None)
+        items += [("Free GPU for 1 hour", lambda: self.free(hours=1), False),
+                  ("Free GPU until I resume", lambda: self.free(hours=None), False),
+                  ("Resume", self.resume, False),
+                  ("Status", lambda: show_toast(" | ".join(self.status_lines())), False)]
+        return items
+
+    def _start_child_tray(self) -> None:
+        """macOS and Linux: the icon runs in a helper process (macOS only allows it on a main thread)."""
+        from .ui_child import ChildUI
+
+        actions = self._tray_actions()
+        spec_items: list = []
+        by_id: dict[str, Callable[[], None]] = {}
+        for i, item in enumerate(actions):
+            if item is None:
+                spec_items.append("-")
+                continue
+            label, action, default = item
+            by_id[str(i)] = action
+            spec_items.append({"id": str(i), "label": label, "default": default})
+
+        def on_event(kind: str, item_id: str) -> None:
+            action = by_id.get(item_id)
+            if kind == "click" and action is not None:
+                threading.Thread(target=self._safe, args=(action,), name="tray-action", daemon=True).start()
+
+        try:
+            self._icon = ChildUI("tray", {"title": "Vault ingest", "icon": "idle", "items": spec_items}, on_event)
+        except Exception as e:  # noqa: BLE001
+            log.warning("No tray icon (%s). Install pystray, and on Linux a tray: "
+                        "libayatana-appindicator or a desktop with a system tray.", e)
+            self._icon = None
+            return
+        self._icons = {"idle": "idle", "processing": "processing", "paused": "paused"}
+        log.info("Tray icon is up. Hotkey %s toggles pause.", self.rules.hotkey or "(off)")
+
     def start_tray(self) -> None:
         if self._icon is not None:
+            return
+        if sys.platform != "win32":
+            self._start_child_tray()
             return
         try:
             import pystray
@@ -1359,6 +1421,10 @@ class GpuService:
 
     def _paint(self, phase: str) -> None:
         if self._icon is None or phase not in self._icons:
+            return
+        if hasattr(self._icon, "send"):                     # helper-process tray (macOS, Linux)
+            self._icon.send(f"icon {phase}")
+            self._icon.send(f"title Vault ingest — {phase}")
             return
         try:
             self._icon.icon = self._icons[phase]

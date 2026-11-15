@@ -11,7 +11,16 @@ from dotenv import load_dotenv
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = PACKAGE_DIR.parent
-DEFAULT_ENV_FILE = PROJECT_DIR / ".env"
+
+
+def home() -> Path:
+    """Folder with .env, companion.toml and state/: VAULT_INGEST_HOME (the desktop app sets it, because an
+    installed app cannot write next to its program files), else next to the code."""
+    raw = os.getenv("VAULT_INGEST_HOME")
+    return Path(raw).expanduser().resolve() if raw else PROJECT_DIR
+
+
+DEFAULT_ENV_FILE = home() / ".env"
 
 LLM_MODES = ("cloud", "local")
 LOCAL_PROVIDERS = ("openai_compat", "lmstudio", "ollama")

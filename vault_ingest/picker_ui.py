@@ -8,6 +8,7 @@ import re
 import sys
 import threading
 
+from . import desktop
 from .clients import CHAT_APPS, meeting_key
 from .picker import AskDuplicate, AskField, Created, DecideLater, PickerState, Select, Skip
 
@@ -16,7 +17,7 @@ log = logging.getLogger("vault_ingest")
 WIDTH, HEIGHT, MARGIN = 440, 440, 16
 
 # dark card that stands out over a meeting window
-FONT = "Segoe UI"
+FONT = desktop.ui_font()
 BG, FIELD, EDGE = "#1f2128", "#2a2d36", "#3b3f4b"
 FG, MUTED = "#eceef3", "#9aa0ad"
 ACCENT, REC, REC_HOVER = "#4c8dff", "#e5484d", "#c7383d"
@@ -56,19 +57,14 @@ def bottom_right(right: int, bottom: int, width: int = WIDTH, height: int = HEIG
     return max(0, right - width - margin), max(0, bottom - height - margin)
 
 
-def work_area() -> tuple[int, int, int, int]:
-    """(left, top, right, bottom) of the screen area above the taskbar."""
-    if sys.platform != "win32":
-        return 0, 0, 1280, 800
-    import ctypes
-    from ctypes import wintypes
-
-    rect = wintypes.RECT()
-    ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0)  # SPI_GETWORKAREA
-    return rect.left, rect.top, rect.right, rect.bottom
+def work_area(root=None) -> tuple[int, int, int, int]:
+    """(left, top, right, bottom) of the screen area above the taskbar / Dock."""
+    return desktop.work_area(root)
 
 
 def top_hwnd(widget) -> int:
+    if sys.platform != "win32":
+        return int(widget.winfo_id())
     import ctypes
 
     hwnd = int(widget.winfo_id())
@@ -95,6 +91,8 @@ def give_focus_back(hwnd: int) -> None:
 
 def place_window(hwnd: int, x: int, y: int, width: int, height: int, activate: bool) -> None:
     """Show the window topmost. Without activate, the meeting keeps the keyboard."""
+    if sys.platform != "win32":
+        return                                  # Tk's -topmost and geometry already placed it
     import ctypes
 
     HWND_TOPMOST = -1
@@ -109,7 +107,8 @@ def place_window(hwnd: int, x: int, y: int, width: int, height: int, activate: b
 class PickerWindow:
     """Tk on its own thread. The companion only posts show/refresh; it never touches widgets."""
 
-    def __init__(self, load_records, on_result, on_record, meeting_map, wait: bool = True):
+    def __init__(self, load_records, on_result, on_record, meeting_map, wait: bool = True,
+                 own_thread: bool = True):
         self.load_records = load_records
         self.on_result = on_result
         self.on_record = on_record
@@ -122,6 +121,11 @@ class PickerWindow:
         self.heading = ""
         self.shown = False
         self._ignore_query = False
+        self.thread = None
+        if not own_thread:
+            # macOS: Tk only runs on the main thread. The caller runs `run()` there and the companion's
+            # loop moves to a worker thread; show/refresh still only post to the queue.
+            return
         self.thread = threading.Thread(target=self._main, name="client-picker", daemon=True)
         self.thread.start()
         ready = self.ready.wait(timeout=8)
@@ -140,6 +144,10 @@ class PickerWindow:
 
     def close(self) -> None:
         self.queue.put(("quit",))
+
+    def run(self) -> None:
+        """Run the window on the calling thread until `close()` (macOS main thread)."""
+        self._main()
 
     # ---------------------------------------------------------------- thread
     def _main(self) -> None:
@@ -314,7 +322,7 @@ class PickerWindow:
         self._render()
 
     def _place(self, activate: bool) -> None:
-        _left, _top, right, bottom = work_area()
+        _left, _top, right, bottom = work_area(self.root)
         x, y = bottom_right(right, bottom)
         self.root.geometry(f"{WIDTH}x{HEIGHT}+{x}+{y}")
         # Tk must map the window itself. Showing a withdrawn Tk window only through SetWindowPos left it

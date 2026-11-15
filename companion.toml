@@ -1,5 +1,10 @@
-# Meeting companion settings (`vault-ingest companion`).
+# Meeting companion settings (`vault-ingest companion`). Runs on Windows, macOS and Linux.
 # The vault comes from VAULT_PATH in .env. Paths may use %VARIABLES% and ~.
+# A setting can differ per OS: `folder.windows = '...'`, `folder.macos = '...'`, `folder.linux = '...'`;
+# an OS without its own value uses the built-in default for that OS. %USERPROFILE%, %APPDATA% and
+# %LOCALAPPDATA% also work on macOS/Linux (home, ~/Library/Application Support or ~/.local/share).
+# Process names below list all three: "chrome.exe" (Windows) also matches "chrome" (Linux);
+# macOS names its processes after the app ("Google Chrome", "zoom.us").
 # Restart the companion (or log out and in) after editing this file.
 
 [detection]
@@ -21,29 +26,34 @@ participant_screenshot = true
 # one more screenshot this long after Record (late joiners), only if the meeting window is in front; 0 = off
 participant_followup_seconds = 120
 # first one that exists is started by "Record in Meetily"
-meetily_paths = [
+meetily_paths.windows = [
   '%LOCALAPPDATA%\meetily\meetily.exe',
   '%LOCALAPPDATA%\Programs\meetily\meetily.exe',
   '%ProgramFiles%\meetily\meetily.exe',
   '%ProgramFiles%\Meetily\meetily.exe',
 ]
+meetily_paths.macos = ['/Applications/meetily.app', '/Applications/Meetily.app', '~/Applications/meetily.app']
+meetily_paths.linux = ['/usr/bin/meetily', '/usr/local/bin/meetily', '~/.local/bin/meetily', '~/Applications/meetily.AppImage']
 
 [screenshots]
-# Windows 11 Snipping Tool saves Win+Shift+S snips here (Snipping Tool > Settings > "Automatically save screenshots")
-folder = '%USERPROFILE%\Pictures\Screenshots'
+# Windows 11 Snipping Tool saves Win+Shift+S snips here (Snipping Tool > Settings > "Automatically save screenshots").
+# macOS default: where Cmd+Shift+4 saves (the Desktop unless changed). Linux default: ~/Pictures/Screenshots.
+folder.windows = '%USERPROFILE%\Pictures\Screenshots'
 extensions = [".png", ".jpg", ".jpeg"]
 # a snip taken up to this long after a meeting ended still belongs to it
 attach_after_meeting_seconds = 120
 # snips saved this recently before the companion started are still picked up
 catch_up_minutes = 10
-# global hotkey that opens the snip overlay (same as Win+Shift+S); "" turns it off
+# global hotkey that opens the snip overlay (Win+Shift+S on Windows; on macOS/Linux a region snip saved into
+# `folder`, so it is attached to the meeting); "" turns it off
 hotkey = "ctrl+alt+s"
 
 [meetily]
 # TRANSCRIPT_SOURCE=meetily (in .env) copies Meetily's own transcript into 00_Inbox.
 # TRANSCRIPT_SOURCE=whisper (the default) ignores that transcript and transcribes audio.mp4 instead.
 export = true
-database = '%APPDATA%\com.meetily.ai\meeting_minutes.sqlite'
+# macOS: ~/Library/Application Support/com.meetily.ai/..., Linux: ~/.local/share/com.meetily.ai/... (defaults)
+database.windows = '%APPDATA%\com.meetily.ai\meeting_minutes.sqlite'
 poll_seconds = 30
 # a Meetily transcript counts as finished when it hasn't changed for this long
 settle_seconds = 120
@@ -52,6 +62,7 @@ recordings = '%USERPROFILE%\Music\meetily-recordings'
 audio_settle_seconds = 30
 
 [phone]
+# USB import from an Android phone uses Windows' portable-device API: Windows only
 enabled = true
 poll_seconds = 5
 device_name = "My Phone"
@@ -60,14 +71,16 @@ folder = "Internal storage/Recordings/Voice Recorder"
 settle_seconds = 30
 
 # ------------------------------------------------------------------ microphone
-# Any call is noticed through the microphone: Windows records which app holds it right now
-# (Settings > Privacy & security > Microphone shows the same list). This catches WhatsApp, Viber,
-# Discord and others that have no window rule, and a Meet call in a background tab.
+# Any call is noticed through the microphone: which app is recording from it right now. Windows keeps that list
+# (Settings > Privacy & security > Microphone), Linux has it in PulseAudio/PipeWire (`pactl`), macOS 14.2+ in
+# CoreAudio. This catches WhatsApp, Viber, Discord and others that have no window rule, and a Meet call in a
+# background tab.
 [microphone]
 enabled = true
 # an app not listed under [[mic_apps]] that holds the microphone also counts, as "Call (<app>)"
 any_app = true
-# while a game is running (Steam/Epic/GOG/Xbox folder), the microphone does not start a meeting (game voice chat)
+# while a game is open (a window of a program in a Steam/Epic/GOG/Xbox folder), the microphone does not start a
+# meeting (game voice chat). A game's crash reporter or anti-cheat left running in the background does not count.
 skip_while_gaming = true
 # held at least this long (a WhatsApp voice message is not a call)
 start_after_seconds = 15
@@ -76,25 +89,28 @@ max_hours = 8
 # never a meeting (regex, matched against the app's package name or exe path). Meetily is here because it
 # holds the microphone while it records.
 ignore = ['meetily', 'SoundRecorder', 'VoiceRecorder', 'obs(32|64)?\.exe', 'NVIDIA Broadcast', 'PowerToys',
-          'claude\.exe', 'ChatGPT', 'steam', 'SpeechRuntime', 'Cortana', 'vault-ingest', 'python']
+          'claude\.exe', 'ChatGPT', 'steam', 'SpeechRuntime', 'Cortana', 'vault-ingest', 'python',
+          # macOS and Linux
+          '(^|/)obs$', 'OBS\.app', 'Voice Memos', 'QuickTime Player', 'corespeechd', 'Siri', 'Claude\.app',
+          'gnome-sound-recorder', 'audacity', 'speech-dispatcher', 'easyeffects']
 
 # `match`: regex on the package name / exe path. `processes`: whose window title names the call.
 # `title`: optional, a window title to prefer. The first matching entry wins.
 [[mic_apps]]
 app = "WhatsApp"
 match = 'whatsapp'
-processes = ["WhatsApp.exe", "WhatsApp.Root.exe"]
+processes = ["WhatsApp.exe", "WhatsApp.Root.exe", "WhatsApp"]
 
 [[mic_apps]]
 app = "Teams"
-match = 'msteams|ms-teams|\\teams\.exe'
-processes = ["ms-teams.exe", "Teams.exe"]
+match = 'msteams|ms-teams|[\\/]teams(\.exe)?$|Microsoft Teams|teams-for-linux'
+processes = ["ms-teams.exe", "Teams.exe", "Microsoft Teams", "MSTeams", "teams-for-linux"]
 title = '\b(meeting|call)\b'
 
 [[mic_apps]]
 app = "Zoom"
 match = 'zoom'
-processes = ["Zoom.exe"]
+processes = ["Zoom.exe", "zoom.us", "zoom"]
 title = 'meeting|webinar'
 
 [[mic_apps]]
@@ -120,7 +136,7 @@ processes = ["Signal.exe"]
 [[mic_apps]]
 app = "Telegram"
 match = 'telegram'
-processes = ["Telegram.exe"]
+processes = ["Telegram.exe", "telegram-desktop"]
 
 [[mic_apps]]
 app = "Messenger"
@@ -130,13 +146,15 @@ processes = ["Messenger.exe"]
 [[mic_apps]]
 app = "Skype"
 match = 'skype'
-processes = ["Skype.exe"]
+processes = ["Skype.exe", "skypeforlinux"]
 
 [[mic_apps]]
 # a call in a browser tab (Meet, Zoom web, Teams web, WhatsApp Web, Messenger...)
 app = "Browser call"
-match = '\\(chrome|msedge|brave|firefox|opera|vivaldi|arc)\.exe$'
-processes = ["chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe", "vivaldi.exe", "arc.exe"]
+match = '[\\/](chrome|chromium|chromium-browser|msedge|microsoft-edge|brave|firefox|firefox-esr|opera|vivaldi|vivaldi-bin|arc)(\.exe)?$|(Google Chrome|Microsoft Edge|Brave Browser|Firefox|Opera|Vivaldi|Arc|Safari)\.app'
+processes = ["chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe", "vivaldi.exe", "arc.exe",
+             "Google Chrome", "Microsoft Edge", "Brave Browser", "Firefox", "Opera", "Vivaldi", "Arc", "Safari",
+             "chromium", "chromium-browser", "microsoft-edge", "firefox-esr", "vivaldi-bin"]
 title = 'meet|zoom|teams|whatsapp|messenger|call|poziv|sastanak'
 
 # ------------------------------------------------------------------ window rules
@@ -149,7 +167,7 @@ title = 'meet|zoom|teams|whatsapp|messenger|call|poziv|sastanak'
 
 [[rules]]
 app = "Zoom"
-processes = ["Zoom.exe"]
+processes = ["Zoom.exe", "zoom.us", "zoom"]
 title = '^Zoom (Meeting|Webinar)\b|^Zoom Workplace\b.*\bmeeting\b'
 
 [[rules]]
@@ -160,18 +178,22 @@ class = '^ConfMultiTabContentWndClass$'
 
 [[rules]]
 app = "Google Meet"
-processes = ["chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe"]
+processes = ["chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe",
+             "Google Chrome", "Microsoft Edge", "Brave Browser", "Firefox", "Opera", "Arc", "Safari",
+             "chromium", "chromium-browser", "microsoft-edge", "firefox-esr"]
 title = '^Meet - |(?-i:\b[a-z]{3}-[a-z]{4}-[a-z]{3}\b)'
 
 [[rules]]
 app = "Zoom (web)"
-processes = ["chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe"]
+processes = ["chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe",
+             "Google Chrome", "Microsoft Edge", "Brave Browser", "Firefox", "Opera", "Arc", "Safari",
+             "chromium", "chromium-browser", "microsoft-edge", "firefox-esr"]
 title = '^(?=.*\bzoom\b)(?=.*\bmeeting\b)'
 exclude = '\bsearch\b|\bsign in\b'
 
 [[rules]]
 app = "Teams"
-processes = ["ms-teams.exe", "Teams.exe"]
+processes = ["ms-teams.exe", "Teams.exe", "Microsoft Teams", "MSTeams", "teams-for-linux"]
 title = '\b(meeting|call)\b'
 exclude = '^(chat|activity|calendar|calls|teams|files|apps|people|onedrive|communities|assignments|copilot)\s*\|'
 
@@ -189,6 +211,14 @@ paths = [
   "\\XboxGames\\",
 ]
 names = ["ProjectZomboid64.exe"]
+# not games, though they run from a game's folder: crash reporters and anti-cheat services stay running after
+# the game is closed (leave out to use the built-in list)
+helpers = [
+  "crashpad_handler.exe", "UnityCrashHandler64.exe", "UnityCrashHandler32.exe", "CrashReportClient.exe",
+  "CrashReporter.exe", "CrashHandler.exe", "BugSplatHD64.exe", "EasyAntiCheat.exe", "EasyAntiCheat_EOS.exe",
+  "start_protected_game.exe", "BEService.exe", "BEService_x64.exe", "service.exe",
+  "steamerrorreporter.exe", "steamerrorreporter64.exe",
+]
 fullscreen_ignore = [
   "chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe",
   "Zoom.exe", "ms-teams.exe", "Teams.exe", "meetily.exe",

@@ -7,7 +7,6 @@ import datetime as dt
 import logging
 import os
 import re
-import sys
 import threading
 import time
 import tomllib
@@ -15,8 +14,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
+from . import desktop
 from .clients import meeting_key
-from .config import PROJECT_DIR, Settings
+from .config import Settings, home
+from .desktop import AudioProbe, Window, expand_path, pick_os_value, proc_key
 from .gpu import GpuRules, rules_from_toml
 from .meeting_signals import MicConfig, MicUser, call_title, classify, mic_config_from_toml
 from .screenshots import ScreenshotWatcher
@@ -25,25 +26,12 @@ from .vault import Vault
 
 log = logging.getLogger("vault_ingest")
 
-DEFAULT_CONFIG = PROJECT_DIR / "companion.toml"
+DEFAULT_CONFIG = home() / "companion.toml"
 HEARTBEAT_SECONDS = 60
 RECENT_SESSION_HOURS = 24
 
 
-def expand_path(p: str | Path) -> Path:
-    return Path(os.path.expandvars(os.path.expanduser(str(p))))
-
-
 # ------------------------------------------------------------------ config
-@dataclass
-class Window:
-    hwnd: int
-    pid: int
-    process: str
-    title: str
-    class_name: str = ""
-
-
 @dataclass
 class Rule:
     app: str
@@ -51,9 +39,14 @@ class Rule:
     title: re.Pattern | None = None
     class_re: re.Pattern | None = None
     exclude: re.Pattern | None = None
+    _keys: frozenset[str] = field(default=frozenset(), init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # "chrome.exe" in a rule also matches "chrome" on Linux; macOS names ("Google Chrome") are listed too
+        self._keys = frozenset(proc_key(p) for p in self.processes)
 
     def matches(self, w: Window) -> bool:
-        if w.process.lower() not in self.processes:
+        if proc_key(w.process) not in self._keys:
             return False
         if self.title is not None and not self.title.search(w.title):
             return False
@@ -81,21 +74,20 @@ class CompanionConfig:
     audio_keeps_meeting_alive: bool = True
     popup_enabled: bool = True
     picker_hotkey: str = "ctrl+alt+c"
-    meetily_paths: list[str] = field(default_factory=list)
-    screenshot_folder: Path = field(default_factory=lambda: expand_path(r"%USERPROFILE%\Pictures\Screenshots"))
+    meetily_paths: list[str] = field(default_factory=desktop.default_meetily_paths)
+    screenshot_folder: Path = field(default_factory=desktop.default_screenshot_folder)
     screenshot_extensions: tuple[str, ...] = (".png", ".jpg", ".jpeg")
     attach_after_meeting_seconds: float = 120.0
     catch_up_minutes: float = 10.0
     hotkey: str = "ctrl+alt+s"
     meetily_export: bool = True
-    meetily_database: Path = field(
-        default_factory=lambda: expand_path(r"%APPDATA%\com.meetily.ai\meeting_minutes.sqlite"))
+    meetily_database: Path = field(default_factory=desktop.default_meetily_database)
     meetily_poll_seconds: float = 30.0
     meetily_settle_seconds: float = 120.0
-    recordings_folder: Path = field(default_factory=lambda: expand_path(r"%USERPROFILE%\Music\meetily-recordings"))
+    recordings_folder: Path = field(default_factory=desktop.default_recordings_folder)
     audio_settle_seconds: float = 30.0
     gpu: GpuRules = field(default_factory=GpuRules)
-    phone_enabled: bool = True
+    phone_enabled: bool = desktop.IS_WINDOWS   # USB phone import uses Windows' portable-device API
     phone_poll_seconds: float = 5.0
     phone_device_name: str = "My Phone"
     phone_usb_id: str = r"USB\VID_04E8&PID_6860"
@@ -141,27 +133,32 @@ def load_config(path: str | Path | None = None) -> CompanionConfig:
     cfg.end_grace_seconds = float(det.get("end_grace_seconds", cfg.end_grace_seconds))
     cfg.audio_keeps_meeting_alive = bool(det.get("audio_keeps_meeting_alive", cfg.audio_keeps_meeting_alive))
     cfg.popup_enabled = bool(pop.get("enabled", cfg.popup_enabled))
-    cfg.picker_hotkey = str(pop.get("picker_hotkey", cfg.picker_hotkey) or "")
-    cfg.meetily_paths = [str(p) for p in pop.get("meetily_paths", cfg.meetily_paths)]
-    if "folder" in shots:
-        cfg.screenshot_folder = expand_path(shots["folder"])
+    cfg.picker_hotkey = str(pick_os_value(pop.get("picker_hotkey"), cfg.picker_hotkey) or "")
+    paths = pick_os_value(pop.get("meetily_paths"), None)
+    if paths:
+        cfg.meetily_paths = [str(p) for p in ([paths] if isinstance(paths, str) else paths)]
+    folder = pick_os_value(shots.get("folder"), None)
+    if folder:
+        cfg.screenshot_folder = expand_path(folder)
     cfg.screenshot_extensions = tuple(e.lower() for e in shots.get("extensions", cfg.screenshot_extensions))
     cfg.attach_after_meeting_seconds = float(shots.get("attach_after_meeting_seconds",
                                                        cfg.attach_after_meeting_seconds))
     cfg.catch_up_minutes = float(shots.get("catch_up_minutes", cfg.catch_up_minutes))
-    cfg.hotkey = str(shots.get("hotkey", cfg.hotkey) or "")
+    cfg.hotkey = str(pick_os_value(shots.get("hotkey"), cfg.hotkey) or "")
     cfg.meetily_export = bool(mt.get("export", cfg.meetily_export))
-    if "database" in mt:
-        cfg.meetily_database = expand_path(mt["database"])
+    database = pick_os_value(mt.get("database"), None)
+    if database:
+        cfg.meetily_database = expand_path(database)
     cfg.meetily_poll_seconds = float(mt.get("poll_seconds", cfg.meetily_poll_seconds))
     cfg.meetily_settle_seconds = float(mt.get("settle_seconds", cfg.meetily_settle_seconds))
-    if "recordings" in mt:
-        cfg.recordings_folder = expand_path(mt["recordings"])
+    recordings = pick_os_value(mt.get("recordings"), None)
+    if recordings:
+        cfg.recordings_folder = expand_path(recordings)
     cfg.audio_settle_seconds = float(mt.get("audio_settle_seconds", cfg.audio_settle_seconds))
     cfg.gpu = rules_from_toml(raw.get("GPU_BUSY_RULES"))
     phone = raw.get("phone") or {}
     if "enabled" in phone:
-        cfg.phone_enabled = bool(phone["enabled"])
+        cfg.phone_enabled = bool(phone["enabled"]) and desktop.IS_WINDOWS
     cfg.phone_poll_seconds = float(phone.get("poll_seconds", cfg.phone_poll_seconds))
     if phone.get("device_name"):
         cfg.phone_device_name = str(phone["device_name"])
@@ -197,7 +194,7 @@ def mic_match(cfg: MicConfig, users: Iterable[MicUser], windows: Iterable[Window
     app, user = found[0]
     title, w = call_title(app, windows, user.exe)
     process = w.process if w is not None else (user.exe or (app.processes[0] if app.processes else app.app))
-    rule = Rule(app=app.app, processes=frozenset(p.lower() for p in (app.processes or (process,))))
+    rule = Rule(app=app.app, processes=frozenset(proc_key(p) for p in (app.processes or (process,))))
     window = w if w is not None else Window(0, 0, process, title)
     if w is not None and window.title != title:
         window = Window(w.hwnd, w.pid, w.process, title, w.class_name)
@@ -251,139 +248,66 @@ class MeetingTracker:
 
 
 # ------------------------------------------------------------------ Windows: windows, audio, focus
-class WindowLister:
-    """Visible top-level windows with a title, plus their process names (cached per pid)."""
-
-    def __init__(self):
-        import ctypes
-        from ctypes import wintypes
-
-        self.ctypes, self.wintypes = ctypes, wintypes
-        u = self.user32 = ctypes.WinDLL("user32", use_last_error=True)
-        self.proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        H = wintypes.HWND
-        u.EnumWindows.argtypes = [self.proc_type, wintypes.LPARAM]
-        for fn in (u.IsWindowVisible, u.GetWindowTextLengthW, u.IsIconic, u.SetForegroundWindow):
-            fn.argtypes = [H]
-        u.GetWindowTextW.argtypes = [H, wintypes.LPWSTR, ctypes.c_int]
-        u.GetClassNameW.argtypes = [H, wintypes.LPWSTR, ctypes.c_int]
-        u.GetWindowThreadProcessId.argtypes = [H, ctypes.POINTER(wintypes.DWORD)]
-        u.ShowWindow.argtypes = [H, ctypes.c_int]
-        u.keybd_event.argtypes = [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_size_t]
-        self.names: dict[int, str] = {}
-
-    def _process_name(self, pid: int) -> str:
-        if pid not in self.names:
-            import psutil
-
-            try:
-                self.names[pid] = psutil.Process(pid).name()
-            except (psutil.Error, OSError):
-                self.names[pid] = ""
-        return self.names[pid]
-
-    def list(self, visible_only: bool = True) -> list[Window]:
-        ctypes, wintypes, user32 = self.ctypes, self.wintypes, self.user32
-        raw: list[tuple[int, int, str, str]] = []
-
-        def cb(hwnd, _):
-            if visible_only and not user32.IsWindowVisible(hwnd):
-                return True
-            n = user32.GetWindowTextLengthW(hwnd)
-            if n <= 0:
-                return True
-            buf = ctypes.create_unicode_buffer(n + 1)
-            user32.GetWindowTextW(hwnd, buf, n + 1)
-            cls = ctypes.create_unicode_buffer(256)
-            user32.GetClassNameW(hwnd, cls, 256)
-            pid = wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            raw.append((int(hwnd or 0), pid.value, buf.value, cls.value))
-            return True
-
-        user32.EnumWindows(self.proc_type(cb), 0)
-        pids = {r[1] for r in raw}
-        for gone in set(self.names) - pids:          # pids get reused; forget the ones that disappeared
-            del self.names[gone]
-        return [Window(h, pid, self._process_name(pid), title, cls) for h, pid, title, cls in raw]
-
-    def focus(self, hwnd: int) -> bool:
-        user32 = self.user32
-        if not user32.IsWindowVisible(hwnd):
-            user32.ShowWindow(hwnd, 5)               # SW_SHOW (Meetily hidden in the tray)
-        if user32.IsIconic(hwnd):
-            user32.ShowWindow(hwnd, 9)               # SW_RESTORE
-        # a background process may only take the foreground right after a key event
-        user32.keybd_event(0x12, 0, 0, 0)            # Alt down
-        ok = bool(user32.SetForegroundWindow(hwnd))
-        user32.keybd_event(0x12, 0, 2, 0)            # Alt up
-        return ok
-
-
-class AudioProbe:
-    """Process names with an active (playing) audio session, via pycaw. Disables itself if COM fails."""
-
-    def __init__(self):
-        self.ok = True
-
-    def playing(self) -> set[str]:
-        if not self.ok:
-            return set()
-        try:
-            from pycaw.pycaw import AudioUtilities
-
-            names = set()
-            for s in AudioUtilities.GetAllSessions():
-                if s.Process is not None and s.State == 1:          # AudioSessionStateActive
-                    names.add(s.Process.name().lower())
-            return names
-        except Exception as e:  # noqa: BLE001
-            self.ok = False
-            log.warning("Can't read audio sessions (%s); a meeting now ends end_grace_seconds after its "
-                        "window was last seen.", e)
-            return set()
+def WindowLister():
+    """Visible top-level windows with a title, for this platform (see `desktop.make_window_lister`)."""
+    return desktop.make_window_lister()
 
 
 def find_meetily(paths: Iterable[str]) -> Path | None:
+    """The first Meetily that exists: an .exe, a macOS .app bundle (a folder) or a Linux executable."""
     for p in paths:
         exe = expand_path(p)
-        if exe.is_file():
+        if exe.is_file() or (exe.suffix.lower() == ".app" and exe.is_dir()):
             return exe
     return None
 
 
-def open_meetily(paths: Iterable[str], windows: WindowLister | None = None) -> bool:
+def is_meetily_window(w: Window, exe: Path | None) -> bool:
+    if desktop.IS_WINDOWS:
+        name = (exe.name if exe else "meetily.exe").lower()
+        return w.process.lower() == name and w.class_name == "Tauri Window"
+    return proc_key(w.process) == proc_key(exe.stem if exe else "meetily")
+
+
+def open_meetily(paths: Iterable[str], windows=None) -> bool:
     """Bring Meetily to the front, or start it. Never clicks anything inside Meetily."""
     exe = find_meetily(paths)
-    exe_name = (exe.name if exe else "meetily.exe").lower()
     if windows is not None:
-        own = [w for w in windows.list(visible_only=False)
-               if w.process.lower() == exe_name and w.class_name == "Tauri Window"]
-        if own and windows.focus(own[0].hwnd):
+        own = [w for w in windows.list(visible_only=False) if is_meetily_window(w, exe)]
+        if own and windows.focus(own[0]):
             log.info("Brought Meetily to the front.")
             return True
-    if exe:
-        os.startfile(str(exe))                       # Meetily is single-instance: this also focuses a running one
+    if exe and desktop.launch_app(exe):          # Meetily is single-instance: this also focuses a running one
         log.info("Started %s", exe)
         return True
     log.warning("Meetily not found. Set [popup] meetily_paths in companion.toml.")
     return False
 
 
-def open_snip_overlay() -> None:
-    os.startfile("ms-screenclip:")
+def open_snip_overlay(folder: Path | None = None) -> None:
+    """Win+Shift+S on Windows; on macOS/Linux a region snip saved into the screenshot folder."""
+    desktop.open_snip_tool(folder or desktop.default_screenshot_folder())
 
 
-def pynput_hotkey(combo: str) -> str:
-    names = {"control": "ctrl", "win": "cmd", "windows": "cmd", "super": "cmd"}
-    keys = [names.get(k, k) for k in combo.lower().replace(" ", "").split("+") if k]
-    return "+".join(f"<{k}>" if len(k) > 1 else k for k in keys)
+from .ui_child import pynput_hotkey  # noqa: E402  (one combo parser for both)
 
 
 def start_hotkeys(combos: dict[str, Callable[[], None]]):
     mapping = {pynput_hotkey(combo): action for combo, action in combos.items() if combo}
     if not mapping:
         return None
+    if desktop.IS_MAC:
+        # pynput's macOS listener must not share a process with Tk; run it in a helper process
+        try:
+            from .ui_child import ChildHotkeys
+
+            listener = ChildHotkeys({c: a for c, a in combos.items() if c})
+            log.info("Hotkeys: %s (macOS asks once for Accessibility/Input Monitoring permission).",
+                     ", ".join(combo for combo in combos if combo))
+            return listener
+        except Exception as e:  # noqa: BLE001
+            log.warning("Could not register hotkeys (%s): %s", ", ".join(combos), e)
+            return None
     try:
         from pynput import keyboard
 
@@ -405,6 +329,8 @@ class Notifier:
     """Windows toast with "Record with Meetily" / "Ignore" buttons (callbacks work while this process runs)."""
 
     def __init__(self, on_record: Callable[[Session], None]):
+        if not desktop.IS_WINDOWS:
+            raise RuntimeError("Record buttons in notifications are Windows-only")
         from windows_toasts import InteractableWindowsToaster
 
         self.on_record = on_record
@@ -436,17 +362,31 @@ class Notifier:
 # ------------------------------------------------------------------ game check
 class GameProbe:
     """Name of a running game (GPU pause rules: Steam/Epic/GOG/Xbox folders, listed names), checked at most
-    every 30 seconds."""
+    every 30 seconds.
 
-    def __init__(self, rules: GpuRules, every: float = 30.0):
+    With `window_pids`, a game only counts while one of its processes has a window open. A game's crash
+    reporter or anti-cheat service (crashpad_handler.exe, service.exe...) keeps running from the game folder
+    after the game is closed; that is not someone playing, so a WhatsApp or Discord call still counts."""
+
+    def __init__(self, rules: GpuRules, every: float = 30.0,
+                 window_pids: Callable[[], set[int]] | None = None):
         self.rules, self.every = rules, every
+        self.window_pids = window_pids
         self._at = -1e18
         self._game: str | None = None
 
     def running(self, now: float) -> str | None:
         if now - self._at >= self.every:
             from .gpu import detect_busy, list_processes
-            hit = detect_busy(list_processes(), None, None, True, self.rules)
+            procs = list_processes()
+            if self.window_pids is not None:
+                try:
+                    pids = self.window_pids()
+                except Exception:  # noqa: BLE001
+                    pids = None
+                if pids is not None:
+                    procs = [p for p in procs if p.pid in pids]
+            hit = detect_busy(procs, None, None, True, self.rules)
             self._game = hit.label if hit is not None else None
             self._at = now
         return self._game
@@ -474,6 +414,7 @@ class Companion:
         self.tracker = MeetingTracker(cfg.start_after_matches, cfg.end_grace_seconds)
         self.session: Session | None = None
         self.sessions: list[Session] = []
+        self.last_windows: list[Window] = []
         self._last_beat = 0.0
         self.shots = ScreenshotWatcher(cfg.screenshot_folder, s.system / "screenshots", vault, store,
                                        lambda: list(self.sessions), cfg.screenshot_extensions,
@@ -494,6 +435,7 @@ class Companion:
             self.open_recorder()
 
     def tick(self, now: float, windows: list[Window]) -> list[Started | Ended]:
+        self.last_windows = windows
         m = match_windows(self.cfg.rules, windows)
         if m is None and self.mic is not None:
             try:
@@ -516,7 +458,7 @@ class Companion:
                     self._gaming_logged = None
         audible = False
         if self.tracker.active is not None and m is None and self.cfg.audio_keeps_meeting_alive and self.audio:
-            audible = self.tracker.active.window.process.lower() in self.audio()
+            audible = proc_key(self.tracker.active.window.process) in {proc_key(n) for n in self.audio()}
         events = self.tracker.update(now, m, audible)
         for ev in events:
             if isinstance(ev, Started):
@@ -578,21 +520,39 @@ class Companion:
 
 # ------------------------------------------------------------------ single instance
 def acquire_lock(vault: Vault, path: Path) -> bool:
-    import psutil
-
     if path.exists():
         try:
             pid = int(path.read_text(encoding="utf-8").split()[0])
-            if pid != os.getpid() and psutil.pid_exists(pid):
-                cmd = " ".join(psutil.Process(pid).cmdline()).lower()
-                if "companion" in cmd:
-                    return False
-        except (ValueError, IndexError, OSError, psutil.NoSuchProcess):
+            if pid != os.getpid() and _lock_owner_is_companion(pid, path):
+                return False
+        except (ValueError, IndexError, OSError):
             pass
-        except psutil.AccessDenied:
-            return False
+        log.info("Taking over a stale companion lock (%s).", path)
     vault.write(path, f"{os.getpid()}\n")
     return True
+
+
+def _lock_owner_is_companion(pid: int, path: Path) -> bool:
+    """True only if `pid` is still the companion that wrote `path`.
+
+    After a reboot Windows hands the old PID to some other process. That process
+    can be protected (AccessDenied) or have started after the lock was written;
+    either way it is not our companion, so the lock is stale.
+    """
+    import psutil
+
+    try:
+        if not psutil.pid_exists(pid):
+            return False
+        proc = psutil.Process(pid)
+        # a process that started after the lock was written cannot have written it
+        if proc.create_time() > path.stat().st_mtime + 5:
+            return False
+        args = [a.lower() for a in proc.cmdline()]
+    except (psutil.Error, OSError):
+        return False
+    # `serve` runs the companion too; the `vault-ingest` launcher counts like `python -m vault_ingest`
+    return "vault_ingest" in " ".join(args).replace("-", "_") and bool({"companion", "serve"} & set(args))
 
 
 PICKER_RETRY_SECONDS = 30
@@ -655,12 +615,14 @@ def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int
     lister = WindowLister()
     audio = AudioProbe()
     mic = MicWatcher(cfg.mic) if cfg.mic.enabled else None
+    companion = None
+    games = GameProbe(cfg.gpu, window_pids=lambda: {w.pid for w in companion.last_windows} if companion else None)
     companion = Companion(s, cfg, vault, store, audio=audio.playing,
                           open_recorder=lambda: open_meetily(cfg.meetily_paths, lister), mic=mic,
-                          gaming=GameProbe(cfg.gpu).running)
+                          gaming=games.running)
     companion.load_recent()
     companion.shots.prime()
-    capture_dir = PROJECT_DIR / "state" / "captures"
+    capture_dir = home() / "state" / "captures"
 
     def participant_shot(label: str = "participants") -> None:
         """Whole-desktop screenshot, attached to the meeting so the vision model can read who is in it."""
@@ -686,7 +648,7 @@ def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int
         if companion.session is not session:
             return
         front = foreground_process()
-        if session.process and front != session.process.lower():
+        if session.process and front != proc_key(session.process):
             log.info("No follow-up participant screenshot: %s is in front, not %s.", front or "?", session.process)
             return
         participant_shot()
@@ -702,11 +664,14 @@ def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int
         elif companion.open_recorder:
             companion.open_recorder()
 
+    reopen_hint = "click the Vault ingest tray icon" + (f" or press {cfg.picker_hotkey}" if cfg.picker_hotkey else "")
+
     def announce(session) -> None:
         show_toast(f"{session.app} meeting detected. Pick the client in the popup (bottom right); "
-                   "closed it? Click the Vault ingest tray icon.")
+                   f"closed it? {reopen_hint[0].upper()}{reopen_hint[1:]}.")
 
     picker_startup = None
+    main_thread_window = None
     meeting_map = None
     phone_mon = None
     if cfg.popup_enabled:
@@ -749,9 +714,15 @@ def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int
             companion.on_retitle = window.refresh_session
             refresh_hotkeys()
 
-        picker_startup = PickerStartup(
-            lambda: PickerWindow(lambda: load_clients(s.clients), on_result, on_record, meeting_map, wait=False),
-            wire)
+        def make_picker():
+            if main_thread_window is not None:
+                return main_thread_window
+            return PickerWindow(lambda: load_clients(s.clients), on_result, on_record, meeting_map, wait=False)
+
+        if desktop.IS_MAC:
+            main_thread_window = PickerWindow(lambda: load_clients(s.clients), on_result, on_record, meeting_map,
+                                              wait=False, own_thread=False)
+        picker_startup = PickerStartup(make_picker, wire)
 
     from .gpu import GpuService
 
@@ -806,7 +777,7 @@ def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int
         nonlocal listener
         combos: dict[str, Callable[[], None]] = {}
         if hotkey and cfg.hotkey:
-            combos[cfg.hotkey] = open_snip_overlay
+            combos[cfg.hotkey] = lambda: open_snip_overlay(cfg.screenshot_folder)
         window = picker_startup.window if picker_startup is not None and picker_startup.ready else None
         if hotkey and window is not None and cfg.picker_hotkey:
             combos[cfg.picker_hotkey] = lambda: window.show(companion.latest_session(), activate=True)
@@ -822,7 +793,7 @@ def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int
 
     if picker_startup is not None:
         picker_startup.poll(time.time())
-    if cfg.popup_enabled and (picker_startup is None or not picker_startup.ready):
+    if cfg.popup_enabled and desktop.IS_WINDOWS and (picker_startup is None or not picker_startup.ready):
         try:
             companion.notifier = Notifier(record)
         except Exception as e:  # noqa: BLE001
@@ -837,7 +808,9 @@ def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int
     if cfg.mic.enabled:
         log.info("Microphone detection on: %s%s.", ", ".join(a.app for a in cfg.mic.apps) or "no listed apps",
                  " and any other app" if cfg.mic.any_app else "")
-    if cfg.phone_enabled:
+    if cfg.phone_enabled and not desktop.IS_WINDOWS:
+        log.info("USB phone import is Windows-only; it is off here.")
+    if cfg.phone_enabled and desktop.IS_WINDOWS:
         from .phone import PHONE_SKIP_LABEL, ImportLedger, PhoneMonitor, PickerNotReady
         from .phone_mtp import ShellPhone
 
@@ -862,7 +835,7 @@ def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int
                 return None
             return apply_picker_result(action, None, None, s, meeting_map)
 
-        state_dir = PROJECT_DIR / "state"
+        state_dir = home() / "state"
         phone_mon = PhoneMonitor(
             ShellPhone(cfg.phone_device_name, cfg.phone_usb_id, cfg.phone_folder),
             ImportLedger(state_dir / "phone_imports.json"),
@@ -873,8 +846,11 @@ def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int
         log.info("Phone import watching %s (%s)", cfg.phone_device_name, cfg.phone_folder)
     next_export = 0.0
     next_lm = time.time() + LM_RETRY_SECONDS
-    try:
-        while True:
+    stop = threading.Event()
+
+    def loop() -> None:
+        nonlocal next_export, next_lm
+        while not stop.is_set():
             now = time.time()
             if picker_startup is not None and not picker_startup.ready:
                 try:
@@ -907,7 +883,19 @@ def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int
                     gpu.set_counts(recordings=len(recordings._jobs) + (1 if recordings.inflight else 0))
                 except Exception:  # noqa: BLE001
                     log.exception("Meetily recording scan failed")
-            time.sleep(cfg.poll_seconds)
+            stop.wait(cfg.poll_seconds)
+    try:
+        if main_thread_window is not None:
+            # macOS: the window owns the main thread, detection runs beside it
+            worker = threading.Thread(target=loop, name="companion-loop", daemon=True)
+            worker.start()
+            main_thread_window.run()
+            if main_thread_window.failed:
+                worker.join()                 # no window could start: keep detecting without it
+            stop.set()
+            worker.join(timeout=10)
+        else:
+            loop()
     except KeyboardInterrupt:
         pass
     finally:
@@ -916,6 +904,7 @@ def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int
         gpu.stop()
         if recordings is not None:
             recordings.stop()
+        stop.set()
         companion.stop()
         if picker_startup is not None and picker_startup.window is not None:
             picker_startup.window.close()
@@ -931,7 +920,4 @@ def main_companion(args) -> int:
     overrides = {"vault_path": args.vault} if getattr(args, "vault", None) else {}
     s = load_settings(args.env, **overrides)
     setup_logging(s.system / "companion.log", args.verbose)
-    if sys.platform != "win32":
-        log.error("The meeting companion only runs on Windows.")
-        return 1
     return run_companion(s, load_config(args.config), hotkey=not args.no_hotkey)

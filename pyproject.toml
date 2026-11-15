@@ -5,6 +5,7 @@ description = "Turn call transcripts into chunked, searchable Obsidian notes for
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Faris Srnja" }]
+keywords = ["obsidian", "whisper", "meeting-notes", "transcription", "speech-to-text", "llm", "local-first"]
 dependencies = [
   "anthropic>=0.40",
   "httpx>=0.27",
@@ -15,17 +16,26 @@ dependencies = [
   "watchdog>=4.0",
   "pillow>=10.0",
   "rapidfuzz>=3",
-  # meeting companion (Windows only)
-  "psutil>=5.9; sys_platform == 'win32'",
+  # meeting companion: Windows, macOS and Linux
+  "psutil>=5.9",
+  "pynput>=1.7",
+  "pystray>=0.19",
   "pycaw>=20240316; sys_platform == 'win32'",
   "comtypes>=1.4; sys_platform == 'win32'",
   "windows-toasts>=1.1; sys_platform == 'win32'",
-  "pynput>=1.7; sys_platform == 'win32'",
-  "pystray>=0.19; sys_platform == 'win32'",
+  "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
+  "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",
+  "python-xlib>=0.33; sys_platform == 'linux'",
 ]
 
+[project.urls]
+Homepage = "https://faris.srnja.com/work/vault-ingest"
+Repository = "https://github.com/JamTheFrogg/vault-ingest"
+
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "vault-ingest[app]"]
+# `vault-ingest serve`: the local API for the desktop app
+app = ["starlette>=0.37", "uvicorn>=0.30"]
 transcribe = [
   "faster-whisper>=1.1",
   "nvidia-cublas-cu12",

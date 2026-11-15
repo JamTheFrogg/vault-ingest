@@ -1,8 +1,9 @@
 """Meeting signals besides window titles.
 
-* Microphone: Windows records which app holds the microphone right now (the same data behind the
-  "app is using your microphone" icon). Any call app shows up there, WhatsApp, Viber and Discord
-  included, and a Meet call in a background tab too.
+* Microphone: which app is recording from the microphone right now. Windows keeps this in the
+  microphone consent store (the data behind the "app is using your microphone" icon), Linux in
+  PulseAudio/PipeWire (`pactl list source-outputs`), macOS 14.2+ in CoreAudio. Any call app shows up there,
+  WhatsApp, Viber and Discord included, and a Meet call in a background tab too.
 * Participant screenshot: a picture of the whole desktop taken when Record is clicked, so the vision
   model can read the names on the participant tiles.
 """
@@ -17,11 +18,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
+from . import desktop
+from .desktop import foreground_process, proc_key  # noqa: F401  (foreground_process is re-exported)
+
 log = logging.getLogger("vault_ingest")
 
 MIC_KEY = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
 FILETIME_EPOCH = dt.datetime(1601, 1, 1, tzinfo=dt.timezone.utc)
-BROWSERS = ("chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe", "vivaldi.exe", "arc.exe")
+BROWSERS = ("chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe", "vivaldi.exe", "arc.exe",
+            # macOS and Linux process names
+            "google chrome", "microsoft edge", "brave browser", "chromium", "chromium-browser", "chrome",
+            "firefox-esr", "opera", "vivaldi", "vivaldi-bin", "arc", "safari", "msedge", "brave")
+BROWSER_KEYS = frozenset(proc_key(b) for b in BROWSERS)
 
 
 @dataclass(frozen=True)
@@ -30,10 +38,14 @@ class MicUser:
     Teams) or an exe path with backslashes (desktop apps such as Chrome or Zoom)."""
     id: str
     since: float = 0.0               # epoch seconds Windows says the app started using the microphone
+    process: str = ""                # macOS/Linux: the app's process name, which its windows carry
 
     @property
     def exe(self) -> str:
-        """Lower-case exe file name for a desktop app, "" for a Store app."""
+        """Lower-case process name whose windows belong to this app: the exe file name for a Windows desktop
+        app, "" for a Windows Store app, the app's process name on macOS and Linux."""
+        if self.process:
+            return self.process.lower()
         tail = self.id.replace("/", "\\").rsplit("\\", 1)[-1]
         return tail.lower() if tail.lower().endswith(".exe") else ""
 
@@ -48,6 +60,31 @@ def is_active(start: int, stop: int) -> bool:
 
 
 def read_mic_users() -> list[MicUser]:
+    """Apps recording from the microphone right now. [] when this platform cannot tell."""
+    if desktop.IS_MAC:
+        return mac_mic_users()
+    if desktop.IS_LINUX:
+        return linux_mic_users()
+    return windows_mic_users()
+
+
+def linux_mic_users() -> list[MicUser]:
+    """PulseAudio/PipeWire recording streams. `id` is the executable path (else the binary or app name), so
+    the same `match` regexes work as on Windows."""
+    return [MicUser(st.path or st.app, 0.0, process=desktop.proc_key(st.app)) for st in desktop.linux_mic_streams()]
+
+
+def mac_mic_users() -> list[MicUser]:
+    """CoreAudio processes recording from a microphone. A helper ("Google Chrome Helper") is credited to its
+    app bundle ("Google Chrome"), which owns the call's window."""
+    out = []
+    for pid, path in desktop.mac_mic_processes():
+        app = desktop.app_from_path(path) if path else ""
+        out.append(MicUser(path or app or f"pid {pid}", 0.0, process=desktop.proc_key(app)))
+    return out
+
+
+def windows_mic_users() -> list[MicUser]:
     """Apps that hold the microphone right now (HKCU consent store). [] off Windows or on any error."""
     if sys.platform != "win32":
         return []
@@ -194,7 +231,7 @@ def classify(cfg: MicConfig, user: MicUser) -> MicApp | None:
     if cfg.any_app:
         exe = user.exe
         if exe:
-            name = exe[:-4]
+            name = exe[:-4] if exe.endswith(".exe") else (user.process or exe)
         else:                                             # Store app: "5319275A.WhatsAppDesktop_cv1g..." -> "WhatsAppDesktop"
             name = user.id.split("_", 1)[0].rsplit(".", 1)[-1] or user.id
         return MicApp(app=f"Call ({name})", match=re.compile(re.escape(user.id), re.I),
@@ -205,13 +242,13 @@ def classify(cfg: MicConfig, user: MicUser) -> MicApp | None:
 def call_title(app: MicApp, windows: list, fallback_process: str = "") -> tuple[str, object | None]:
     """A window title to name the call, and that window. Prefers `app.title` matches, then any title that is
     more than the bare app name (a WhatsApp call window is titled with the contact)."""
-    procs = set(app.processes) or ({fallback_process} if fallback_process else set())
-    own = [w for w in windows if w.process.lower() in procs and w.title.strip()]
+    procs = {proc_key(p) for p in app.processes} or ({proc_key(fallback_process)} if fallback_process else set())
+    own = [w for w in windows if proc_key(w.process) in procs and w.title.strip()]
     if app.title is not None:
         for w in own:
             if app.title.search(w.title):
                 return w.title, w
-        if procs & set(BROWSERS):
+        if procs & BROWSER_KEYS:
             return f"{app.app}", None             # some other tab is in front; its title says nothing about the call
     bare = {app.app.lower(), "whatsapp", "viber", "discord", "slack", "signal", "telegram", "skype", "messenger"}
     for w in own:
@@ -225,32 +262,5 @@ def call_title(app: MicApp, windows: list, fallback_process: str = "") -> tuple[
 # ------------------------------------------------------------------ screenshots
 def capture_desktop(dest_dir: Path, label: str = "participants") -> Path:
     """PNG of every monitor. The caller hides its own popup first."""
-    from PIL import ImageGrab
-
-    dest_dir = Path(dest_dir)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    image = ImageGrab.grab(all_screens=True)
-    path = dest_dir / f"{dt.datetime.now():%Y-%m-%d %H-%M-%S} {label}.png"
-    image.save(path)
-    return path
-
-
-def foreground_process() -> str:
-    """Lower-case exe name of the foreground window's process, "" if unknown."""
-    if sys.platform != "win32":
-        return ""
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        import psutil
-
-        user32 = ctypes.windll.user32
-        hwnd = user32.GetForegroundWindow()
-        if not hwnd:
-            return ""
-        pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        return psutil.Process(pid.value).name().lower()
-    except Exception:  # noqa: BLE001
-        return ""
+    path = Path(dest_dir) / f"{dt.datetime.now():%Y-%m-%d %H-%M-%S} {label}.png"
+    return desktop.capture_screen(path)
