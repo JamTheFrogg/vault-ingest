@@ -145,7 +145,9 @@ def test_dismiss_writes_nothing_and_skip_is_not_asked_again(tmp_path):
     chosen = {"action": DecideLater()}
 
     def ask(_rec, heading, respond):
-        assert "Voice 002.m4a" in heading and "2026-10-20 13:15" in heading
+        from vault_ingest.phone import aware
+        shown = aware(recording.mtime).strftime("%Y-%m-%d %H:%M")      # local time, so any time zone passes
+        assert "Voice 002.m4a" in heading and shown in heading
         respond(chosen["action"])
 
     mon, toasts, root = monitor(tmp_path, phone, ask)

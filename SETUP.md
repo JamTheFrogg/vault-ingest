@@ -11,6 +11,8 @@ These are the steps only you can do. Do them in order. Total time is about 15 mi
 
 ## 1. Install the tool
 
+> **On macOS or Linux?** Run `bash unix/install.sh` and later `bash unix/register-startup.sh` instead of the PowerShell scripts below, and see [macOS and Linux](README.md#macos-and-linux) for the permissions and packages each needs. The rest of this checklist is the same.
+
 Open **PowerShell** in this folder. In File Explorer, open the folder, click the address bar, type `powershell`, and press Enter. Then run:
 
 ```powershell

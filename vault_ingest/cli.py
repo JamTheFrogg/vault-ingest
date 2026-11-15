@@ -1,4 +1,4 @@
-"""Command line: vault-ingest run | watch | reprocess <path> | check | mode [cloud|local] | companion | clients"""
+"""Command line: vault-ingest run | watch | reprocess <path> | check | mode [cloud|local] | companion | serve | clients"""
 from __future__ import annotations
 
 import argparse
@@ -291,7 +291,7 @@ def _requeue(front: deque, job: Path, rest: list[Path]) -> None:
     front.appendleft(job)
 
 
-def watch(p: Pipeline) -> None:
+def watch(p: Pipeline, tray: bool = True) -> None:
     from .gpu import finish_chat
 
     from watchdog.events import FileSystemEventHandler
@@ -303,7 +303,7 @@ def watch(p: Pipeline) -> None:
     pending: dict[Path, float] = {}
     front: deque[Path] = deque()
     lock = threading.Lock()
-    service = begin_gpu(p, tray=True)
+    service = begin_gpu(p, tray=tray)
 
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
@@ -671,6 +671,8 @@ def main(argv: list[str] | None = None) -> int:
         sp = sub.add_parser(name, help=help_)
         sp.add_argument("--dry-run", action="store_true", help="show what would happen; no LLM calls, no writes")
         sp.add_argument("--concurrency", type=int, help="parallel LLM calls (default 4; use 1 for local models)")
+        if name == "watch":
+            sp.add_argument("--no-tray", action="store_true", help="no tray icon or pause hotkey (set by `serve`)")
 
     rp = sub.add_parser("reprocess", help="redo one transcript (pass its file in Transcripts/raw/)")
     rp.add_argument("path", nargs="?")
@@ -690,6 +692,10 @@ def main(argv: list[str] | None = None) -> int:
     cmp = sub.add_parser("companion", help="detect meetings, collect screenshots, export Meetily transcripts")
     cmp.add_argument("--config", help="path to companion.toml (default: the one next to this tool)")
     cmp.add_argument("--no-hotkey", action="store_true", help="don't register the snip hotkey")
+
+    srv = sub.add_parser("serve", help="local API and event stream for the desktop app; also runs meeting "
+                                       "detection and `watch`")
+    srv.add_argument("--parent-pid", type=int, help="exit when this process is gone (set by the desktop app)")
 
     cl = sub.add_parser("clients", help="list, add, or fuzzy-find client folders")
     cl_sub = cl.add_subparsers(dest="clients_cmd")
@@ -745,6 +751,10 @@ def main(argv: list[str] | None = None) -> int:
         from .watcher_meetings import main_companion
 
         return main_companion(args)
+    if args.cmd == "serve":
+        from .server import main_serve
+
+        return main_serve(args)
     if args.cmd == "status":
         return status_cmd(args)
     if args.cmd == "check":
@@ -771,7 +781,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.dry_run:
                 print_results(p.run_inbox())
             else:
-                watch(p)
+                watch(p, tray=not args.no_tray)
             return 0
         service = begin_gpu(p, tray=False)
         try:

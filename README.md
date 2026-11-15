@@ -1,6 +1,8 @@
-# vault-ingest
+# vault-ingest: meeting recordings and call transcripts into Obsidian notes
 
-vault-ingest watches an inbox folder in your Obsidian vault for call transcripts (or audio), transcribes audio locally with Whisper (faster-whisper), and uses an LLM (a local model through LM Studio or Ollama, or the Claude API) to write a call summary, searchable transcript parts and a living client profile as Obsidian notes. A Windows meeting companion can detect calls, collect screenshots and pick up phone recordings. Every AI tool connected to your vault (Claude, Cursor, Codex...) then has the full client context.
+vault-ingest turns call transcripts or meeting audio into Obsidian notes. It watches an inbox folder in your vault, transcribes audio locally with Whisper (faster-whisper), and uses an LLM (local through LM Studio or Ollama, or the Claude API) to write a call summary, searchable transcript parts and a living client profile. It runs on Windows 10/11 with Python 3.11 or newer.
+
+By Faris Srnja — case study: [faris.srnja.com/work/vault-ingest](https://faris.srnja.com/work/vault-ingest)
 
 > **Requirements**
 > - **Windows 10/11.** The helper scripts, background tasks and meeting companion are Windows-only.
@@ -60,6 +62,7 @@ Run these from this folder:
 .\.venv\Scripts\vault-ingest mode local         # switch to LM Studio, then test the connection
 .\.venv\Scripts\vault-ingest mode cloud         # switch back to the Claude API, then test the connection
 .\.venv\Scripts\vault-ingest companion          # meeting companion in the foreground (the startup task runs it hidden)
+.\.venv\Scripts\vault-ingest serve              # local API for the desktop app; also runs meeting detection and watch
 .\.venv\Scripts\vault-ingest clients            # list client folders
 .\.venv\Scripts\vault-ingest clients add "Acme" --contact "Alex" --alias "Acme d.o.o."
 .\.venv\Scripts\vault-ingest clients find "alex"                    # fuzzy matches, with scores
@@ -74,6 +77,8 @@ Run these from this folder:
 `reprocess` redoes one call, for example after you edit the prompts. It overwrites that call's note and parts, and it won't duplicate lines in the profile. `reprocess --from-audio` transcribes the call's audio again first, so a change to how timestamps are written actually shows up, then redoes the notes. The previous run's profile lines are replaced, except anything in Snapshot.
 
 `reprocess --all-local` finds every call in `_System/ingest-log.json` that was written in local mode, tells you how many there are, and asks before doing anything. It uses the **current** mode, so run `mode cloud` first if you want Claude to redo them.
+
+`serve` is the engine for the desktop app: a local API on `127.0.0.1` (a free port, chosen at start) with a live event stream. It runs meeting detection without the popup and tray, and starts `watch` itself, so stop the "Meeting companion" and "Vault ingest watcher" tasks first. When it is ready it prints `@@ ready {"port": 51181, "token": "..."}`. Every request needs that token: open `http://127.0.0.1:<port>/status?token=<token>` or `/meetings?token=<token>` in a browser, and follow `/events?token=<token>` with `curl -N` to see calls being detected and files being processed. The other paths are `/sessions/current`, `/sessions/<id>` and `/clients?q=`. Ctrl+C stops it. It needs Starlette and uvicorn; run `pip install -e ".[dev]"` again after updating.
 
 ## Cloud vs local
 
@@ -211,11 +216,11 @@ A Windows notification says `Paused: <game> is running - GPU freed` and, later, 
 - Zoom in a browser: titles containing both "Zoom" and "Meeting"
 - Microsoft Teams: meeting or call windows (titles with "Meeting" or "Call"). Teams names scheduled meetings after their subject, so add a rule if yours aren't picked up.
 
-**Microphone detection (any call app).** Window titles miss calls in apps without a rule (WhatsApp, Viber, Discord...) and Teams meetings whose title has neither "Meeting" nor "Call". So the companion also asks Windows which apps hold the microphone right now: the same list as Settings > Privacy & security > Microphone, read from `HKCU\...\CapabilityAccessManager\ConsentStore\microphone`. An app that holds it for 15 seconds (`[microphone] start_after_seconds`, so a WhatsApp voice message doesn't count) starts a meeting. `[[mic_apps]]` names WhatsApp, Teams, Zoom, Viber, Discord, Slack, Signal, Telegram, Messenger, Skype and browser calls, and `any_app = true` counts any other app as "Call (<app>)". Meetily, recorders, OBS, voice typing and the like are in `[microphone] ignore`, because Meetily holds the microphone while it records. A WhatsApp call is named after its call window (the contact), and that name is remembered per contact in the meeting map like a Meet code. Window rules still win when both match. Microphone use also keeps a meeting going when you switch away from a Meet tab.
+**Microphone detection (any call app).** Window titles miss calls in apps without a rule (WhatsApp, Viber, Discord...) and Teams meetings whose title has neither "Meeting" nor "Call". So the companion also asks the system which apps are recording from the microphone right now. On Windows that is the same list as Settings > Privacy & security > Microphone, read from `HKCU\...\CapabilityAccessManager\ConsentStore\microphone`; on Linux it is `pactl list source-outputs`, on macOS 14.2+ CoreAudio (see [macOS and Linux](#macos-and-linux)). An app that holds it for 15 seconds (`[microphone] start_after_seconds`, so a WhatsApp voice message doesn't count) starts a meeting. `[[mic_apps]]` names WhatsApp, Teams, Zoom, Viber, Discord, Slack, Signal, Telegram, Messenger, Skype and browser calls, and `any_app = true` counts any other app as "Call (<app>)". Meetily, recorders, OBS, voice typing and the like are in `[microphone] ignore`, because Meetily holds the microphone while it records. A WhatsApp call is named after its call window (the contact), and that name is remembered per contact in the meeting map like a Meet code. Window rules still win when both match. While a game has a window open (a program in a Steam/Epic/GOG/Xbox folder), the microphone does not start a meeting, because that is game voice chat (`skip_while_gaming`). A game's crash reporter or anti-cheat service that keeps running after the game is closed (`crashpad_handler.exe`, `service.exe`...) does not count as a game (`[GPU_BUSY_RULES] helpers`). Microphone use also keeps a meeting going when you switch away from a Meet tab.
 
 A browser only shows the title of the active tab. While the meeting's browser is playing audio, the meeting counts as ongoing, so switching tabs doesn't end it (`audio_keeps_meeting_alive`). The flip side is that other audio in that browser, such as a video, keeps the meeting open too. To recognize another app, add a `[[rules]]` block with the process names and a title regex.
 
-**Popup.** When a meeting starts, the [client picker](#client-picker) opens in the bottom-right corner and hands the keyboard straight back to the meeting, and a Windows notification says a meeting was detected. **Record (Meetily) + screenshot participants** hides the popup for a moment, takes a screenshot of the whole desktop (all monitors), then brings Meetily to the front or starts it (`[popup] meetily_paths`). It never clicks anything inside Meetily, so you press Meetily's own record button yourself. Two minutes later it takes one more screenshot for late joiners, but only if the meeting window is in front (`participant_followup_seconds`, 0 turns it off; `participant_screenshot = false` turns both off). If the picker window cannot start, a Windows notification with a Record button is shown instead.
+**Popup.** When a meeting starts, the [client picker](#client-picker) opens in the bottom-right corner and hands the keyboard straight back to the meeting, and a notification says a meeting was detected and how to reopen the popup. **Record (Meetily) + screenshot participants** hides the popup for a moment, takes a screenshot of the whole desktop (all monitors), then brings Meetily to the front or starts it (`[popup] meetily_paths`). It never clicks anything inside Meetily, so you press Meetily's own record button yourself. Two minutes later it takes one more screenshot for late joiners, but only if the meeting window is in front (`participant_followup_seconds`, 0 turns it off; `participant_screenshot = false` turns both off). If the picker window cannot start, a Windows notification with a Record button is shown instead.
 
 **Tray icon.** The companion's round icon sits by the clock (Windows 11 may put it under the `^` arrow; drag it onto the taskbar, or turn it on in Settings > Personalization > Taskbar > Other system tray icons, "pythonw"). **Click it to bring the popup back** if you closed it by accident: it opens for the meeting going on, or the one that ended in the last 30 minutes. Right-click for **Take participant screenshot now** and the GPU pause items. `Ctrl+Alt+C` does the same as the click.
 
@@ -239,6 +244,31 @@ The description prompt is `prompts/screenshot.md`.
 If that newest file is already known, a toast says "Latest recording already in vault" and nothing is copied again. If it is new, the client picker opens and takes the keyboard. The heading shows the file name, the local time, and the length, and the title is prefilled with the recorder name (`Voice 002`). The skip row says **Not a meeting / skip**. Choosing a client writes `<Client> - YYYY-MM-DD - <Title>.<ext>` into `00_Inbox`. The date comes from the file name when it has one, otherwise from the recording's modified time. The watcher then transcribes it and toasts `Done:`, the same as a file you dropped in by hand. Closing the picker writes nothing and asks again the next time the phone is plugged in. While the phone is only charging, one toast says "Unlock the phone and choose File transfer". A folder named `Call` is ignored. Accepted types are `.m4a`, `.mp3`, `.wav`, `.aac`, `.amr`, `.3ga`, `.ogg`, and `.opus`.
 
 **Meetily's own transcript.** With `TRANSCRIPT_SOURCE=meetily`, the companion reads `%APPDATA%\com.meetily.ai\meeting_minutes.sqlite` every 30 seconds and never writes to it. When a transcript has stopped changing for 2 minutes, or Meetily marks its summary as finished, it writes `00_Inbox/<Meeting title> - YYYY-MM-DD.txt`. Exported meetings are listed in `_System/meetily-exported.json`. Recordings that existed before the first run are not exported. The default `TRANSCRIPT_SOURCE=whisper` skips this and transcribes `audio.mp4` instead (see [Transcription](#transcription)).
+
+## macOS and Linux
+
+The ingest pipeline runs anywhere Python 3.11+ runs. The meeting companion runs on Windows, macOS and Linux; what it can see depends on the platform:
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| Meeting window titles | Win32 | Quartz (needs **Screen Recording** permission) | X11 / XWayland (python-xlib or `wmctrl`); not native Wayland windows |
+| Which app uses the microphone | consent store | CoreAudio, macOS 14.2+ (older: "mic in use", credited to the front app) | PulseAudio / PipeWire (`pactl`) |
+| Popup, tray icon, notifications | yes | yes (`osascript` notifications) | yes (`notify-send`; a tray needs a desktop with a system tray / AppIndicator) |
+| Hotkeys | yes | yes (needs **Accessibility / Input Monitoring**) | X11 sessions |
+| Snip hotkey | Win+Shift+S | `screencapture -i`, saved into the screenshot folder | gnome-screenshot, spectacle, flameshot, grim+slurp or scrot |
+| USB phone import | yes | no | no |
+
+Install and start at login:
+
+```bash
+bash unix/install.sh             # .venv, dependencies, self-tests
+bash unix/register-startup.sh    # LaunchAgents (macOS) or ~/.config/autostart entries (Linux)
+bash unix/register-startup.sh --remove
+```
+
+On Linux install `python3-tk`, `pulseaudio-utils` (or `pipewire-pulse`) and `libnotify-bin` from your package manager. On macOS, the first start asks for Screen Recording and Accessibility for Python; allow both and run `register-startup.sh` again so the companion restarts with them. Logs are in `_System/companion.log` like on Windows, plus `state/logs/` for anything printed before logging starts.
+
+`companion.toml` lists Windows, macOS and Linux process names (`chrome.exe`, `Google Chrome`, `chrome`), and a setting can differ per OS with a dotted key, for example `folder.macos = '~/Desktop/Screenshots'`. Without one, each OS uses its own default.
 
 ## Client picker
 

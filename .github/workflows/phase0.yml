@@ -1,0 +1,41 @@
+name: Phase 0 kit
+
+# Runs on every push to feat/desktop-app (a manual-only workflow is not offered until it is on main),
+# and by hand: Actions > Phase 0 kit > Run workflow. See docs/phase-0-checks.md.
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/desktop-app]
+
+permissions:
+  contents: read
+
+jobs:
+  recorder-probe:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: tools/recorder-probe
+    env:
+      # Static C runtime: the .exe runs on a PC without the Visual C++ redistributable.
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: cargo test --release --locked
+      - run: cargo build --release --locked
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: recorder-probe-windows
+          path: tools/recorder-probe/target/release/recorder-probe.exe
+          if-no-files-found: error
+
+  engine:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python scripts/build_engine.py --out engine
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: engine-windows
+          path: engine
+          if-no-files-found: error

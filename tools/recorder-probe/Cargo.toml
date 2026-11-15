@@ -1,0 +1,10 @@
+[package]
+name = "recorder-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+cpal = "=0.18.2"
+ctrlc = "=3.5.2"
+hound = "=3.5.1"
