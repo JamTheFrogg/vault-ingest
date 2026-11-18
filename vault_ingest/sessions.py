@@ -71,6 +71,7 @@ class Session:
     skip: bool = False                    # "Don't ingest this meeting"
     meeting_key: str | None = None        # recurring-meeting key, for meeting-map.json
     processed_client: str | None = None   # client the call was actually filed under
+    marks: list[dict] = field(default_factory=list)   # "Mark moment" while recording: timestamp + offset
 
     @property
     def effective_end(self) -> dt.datetime:
@@ -87,6 +88,7 @@ class Session:
             "recorded_prompt_clicked": self.recorded_prompt_clicked, "screenshots": self.screenshots,
             "last_seen": iso(self.last_seen), "client": self.client, "call_title": self.call_title,
             "skip": self.skip, "meeting_key": self.meeting_key, "processed_client": self.processed_client,
+            "marks": self.marks,
         }
 
     @classmethod
@@ -98,7 +100,7 @@ class Session:
                    last_seen=parse_iso(data.get("last_seen")), path=path,
                    client=data.get("client") or None, call_title=data.get("call_title") or None,
                    skip=bool(data.get("skip")), meeting_key=data.get("meeting_key") or None,
-                   processed_client=data.get("processed_client") or None)
+                   processed_client=data.get("processed_client") or None, marks=list(data.get("marks") or []))
 
 
 class SessionStore:

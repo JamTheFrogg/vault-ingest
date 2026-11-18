@@ -27,9 +27,9 @@ SESSION_FILE = "_System/meetings/2026-09-30 14-00-00 Google Meet.json"
 
 
 @pytest.fixture
-def engine(vault, settings):
+def engine(vault, settings, tmp_path):
     cfg = dataclasses.replace(load_config(PROJECT_DIR / "companion.toml"), screenshot_folder=vault / "nope")
-    return Engine(settings, cfg)
+    return Engine(settings, cfg, data_dir=tmp_path / "home")
 
 
 @pytest.fixture
@@ -62,8 +62,22 @@ def test_requests_without_the_token_are_rejected(client):
     assert client.get("/status?token=").status_code == 401
     assert client.post(f"/status?token={TOKEN}").status_code == 401       # the query token is for GET only
     assert client.get("/status", headers=AUTH).status_code == 200
-    assert client.get(f"/status?token={TOKEN}").status_code == 200        # a browser's address bar
+    for path in ("/status", "/meetings", "/notes", "/sessions/current"):
+        assert client.get(f"{path}?token={TOKEN}").status_code == 401       # only /events takes it in the URL
+    assert client.post(f"/events?token={TOKEN}").status_code == 401
     assert "access-control-allow-origin" not in client.get("/status", headers={**AUTH, "Origin": "http://x"}).headers
+
+
+@pytest.mark.parametrize("origin", ["tauri://localhost", "http://tauri.localhost", "http://localhost:1420"])
+def test_the_app_page_may_call_the_api_but_still_needs_the_token(client, origin):
+    preflight = client.options("/status", headers={"Origin": origin, "Access-Control-Request-Method": "GET",
+                                                   "Access-Control-Request-Headers": "authorization"})
+    assert preflight.status_code == 200 and preflight.headers["access-control-allow-origin"] == origin
+    assert client.get("/status", headers={"Origin": origin}).status_code == 401
+    ok = client.get("/status", headers={**AUTH, "Origin": origin})
+    assert ok.status_code == 200 and ok.headers["access-control-allow-origin"] == origin
+    other = client.options("/status", headers={"Origin": "http://localhost:5173", "Access-Control-Request-Method": "GET"})
+    assert other.status_code == 400 and "access-control-allow-origin" not in other.headers
 
 
 def test_another_host_name_is_rejected(engine):
@@ -87,7 +101,8 @@ def test_status_shape(client, vault, engine):
 
 
 def test_meetings_come_from_session_files_and_the_ingest_log(client, vault):
-    assert client.get("/meetings", headers=AUTH).json() == {"calls": [], "sessions": [], "waiting": []}
+    assert client.get("/meetings", headers=AUTH).json() == {"calls": [], "sessions": [], "waiting": [],
+                                                            "recordings": [], "recording": None}
     add_session(vault)
     record = {"client": "Acme", "date": "2026-09-30", "title": "Kickoff", "chunks": 4,
               "call_note": "Clients/Acme/Calls/2026-09-30 Kickoff.md", "processed_at": "2026-09-30T15:00:00",
@@ -131,10 +146,82 @@ def test_path_traversal_is_rejected(client, vault, sid):
 
 def test_clients_list_and_search(client):
     assert client.get("/clients", headers=AUTH).json() == {
-        "clients": [{"name": "Acme", "aliases": [], "contacts": ["Alex"]}]}
+        "clients": [{"name": "Acme", "aliases": [], "contacts": ["Alex"], "meetings": 0, "last_meeting": None,
+                     "open_items": 1, "profile": "Clients/Acme/Acme.md"}]}
     [hit] = client.get("/clients?q=alex", headers=AUTH).json()["clients"]
     assert hit["name"] == "Acme" and hit["via"] == "contact"
     assert client.get("/clients?q=zzzzzz", headers=AUTH).json() == {"clients": []}
+
+
+def test_a_note_is_read_with_its_frontmatter(client, vault):
+    calls = vault / "Clients/Acme/Calls"
+    (calls / "2026-09-30 Kickoff.md").write_text(
+        "---\ntype: call\nclient: Acme\ndate: 2026-09-30\nchunks: 2\n---\n# Kickoff\n\nČetvrtak.\n", encoding="utf-8")
+    data = client.get("/notes", params={"path": "Clients/Acme/Calls/2026-09-30 Kickoff.md"}, headers=AUTH).json()
+    assert data == {"path": "Clients/Acme/Calls/2026-09-30 Kickoff.md",
+                    "frontmatter": {"type": "call", "client": "Acme", "date": "2026-09-30", "chunks": 2},
+                    "body": "# Kickoff\n\nČetvrtak.\n", "links": []}
+    assert client.get("/notes", params={"path": "Clients/Acme/Calls/nope.md"}, headers=AUTH).status_code == 404
+
+
+@pytest.mark.parametrize("path", ["", "../outside.md", "Clients/../../outside.md", "/etc/passwd", "outside-link.md",
+                                  "_System/ingest-log.json", "Clients/Acme/Calls", "a\x00.md", "."])
+def test_notes_outside_the_vault_or_not_markdown_are_refused(client, vault, path):
+    (vault.parent / "outside.md").write_text("secret", encoding="utf-8")
+    (vault / "_System" / "ingest-log.json").write_text("{}", encoding="utf-8")
+    (vault / "Clients/Acme/Calls").mkdir(parents=True, exist_ok=True)
+    try:
+        (vault / "outside-link.md").symlink_to(vault.parent / "outside.md")
+    except OSError:
+        pass                                                    # no symlinks here (Windows without the privilege)
+    for route in ("/notes", "/backlinks"):
+        response = client.get(route, params={"path": path}, headers=AUTH)
+        assert response.status_code == 400 and "secret" not in response.text
+
+
+def write_call(vault, name="2026-09-30 Kickoff", text="Četvrtak: the staging link."):
+    path = vault / f"Clients/Acme/Calls/{name}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\ntype: call\nclient: Acme\ndate: {name[:10]}\n---\n# {name}\n\n"
+                    f"**Client:** [[Clients/Acme/Acme|Acme]] · [[Gone]]\n\n{text}\n", encoding="utf-8")
+
+
+def test_a_note_comes_with_its_links_resolved_and_its_backlinks(client, vault):
+    write_call(vault)
+    note = client.get("/notes", params={"path": "Clients/Acme/Calls/2026-09-30 Kickoff.md"}, headers=AUTH).json()
+    assert [(x["target"], x["alias"], x["path"]) for x in note["links"]] == [
+        ("Clients/Acme/Acme", "Acme", "Clients/Acme/Acme.md"), ("Gone", None, None)]
+    [back] = client.get("/backlinks", params={"path": "Clients/Acme/Acme.md"}, headers=AUTH).json()["backlinks"]
+    assert back["path"] == "Clients/Acme/Calls/2026-09-30 Kickoff.md" and back["type"] == "call"
+    assert "[[Clients/Acme/Acme|Acme]]" in back["contexts"][0]
+
+
+def test_search_endpoint(client, vault):
+    write_call(vault)
+    data = client.get("/search", params={"q": "cetvrtak"}, headers=AUTH).json()
+    assert data["fts"] in (True, False)
+    [hit] = data["results"]
+    assert hit["path"] == "Clients/Acme/Calls/2026-09-30 Kickoff.md" and ["Četvrtak", True] in hit["snippet"]
+    assert client.get("/search", params={"q": "cetvrtak", "types": "client"}, headers=AUTH).json()["results"] == []
+    assert client.get("/search", params={"q": "x", "types": "nope"}, headers=AUTH).status_code == 400
+    assert client.get("/search", params={"q": "x", "limit": "0"}, headers=AUTH).status_code == 400
+    assert client.get("/search", params={"q": "x", "limit": "a"}, headers=AUTH).status_code == 400
+    assert client.get("/search?q=x").status_code == 401
+
+
+def test_graph_endpoint(client, vault):
+    write_call(vault)
+    (vault / "_System/Templates").mkdir(parents=True, exist_ok=True)
+    (vault / "_System/Templates/Note.md").write_text("[[Clients/Acme/Acme]]", encoding="utf-8")
+    graph = client.get("/graph", headers=AUTH).json()
+    assert {n["id"] for n in graph["nodes"]} == {"Clients/Acme/Acme.md", "Clients/Acme/Calls/2026-09-30 Kickoff.md",
+                                                 "Personal/diary.md"}                # a hand-written note, no _System
+    assert graph["edges"] == [{"source": "Clients/Acme/Calls/2026-09-30 Kickoff.md", "target": "Clients/Acme/Acme.md"}]
+    with_missing = client.get("/graph", params={"missing": "1", "client": "Acme"}, headers=AUTH).json()
+    assert "missing:gone" in {n["id"] for n in with_missing["nodes"]}
+    assert client.get("/graph", params={"types": "call"}, headers=AUTH).json()["edges"] == []
+    assert client.get("/graph", params={"client": "Nobody"}, headers=AUTH).json() == {"nodes": [], "edges": []}
+    assert client.get("/graph", params={"types": "raw"}, headers=AUTH).status_code == 400
 
 
 # ------------------------------------------------------------------ events

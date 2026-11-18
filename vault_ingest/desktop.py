@@ -134,7 +134,8 @@ def default_meetily_database() -> Path:
 
 
 def default_recordings_folder() -> Path:
-    return _home() / "Music" / "meetily-recordings"
+    """Where the built-in recorder writes. An install that used Meetily keeps `recordings` in companion.toml."""
+    return _home() / "Music" / "vault-ingest"
 
 
 def default_meetily_paths() -> list[str]:

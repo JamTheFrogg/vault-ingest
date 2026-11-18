@@ -131,6 +131,11 @@ def check(engine: Path) -> None:
     if not python_exe(engine).is_file():
         raise SystemExit(f"No engine at {engine}. Build it first: python scripts/build_engine.py")
     run_engine(engine, "-c", "import ctranslate2, faster_whisper, vault_ingest.cli")
+    # the AI tools start the vault server with this interpreter: its SDK and numpy must import from here
+    run_engine(engine, "-c", "import mcp.server.mcpserver, numpy, vault_ingest.mcp_server, vault_ingest.connect")
+    # the note index works without FTS5, but search is slower and unranked: a build without it is a mistake
+    run_engine(engine, "-c", "import sqlite3; sqlite3.connect(':memory:').execute(\"CREATE VIRTUAL TABLE t USING "
+                             "fts5(x, tokenize='unicode61 remove_diacritics 2')\")")
     run_engine(engine, "-m", "vault_ingest", "--help")
     size = sum(p.stat().st_size for p in engine.rglob("*") if p.is_file() and not p.is_symlink())
     print(f"Engine OK: {engine} ({size / 1e6:.0f} MB)")

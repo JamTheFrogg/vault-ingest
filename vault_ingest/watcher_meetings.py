@@ -3,6 +3,7 @@ app, WhatsApp included), offer to record with Meetily, take a participant screen
 log sessions, collect screenshots and export finished Meetily transcripts into the inbox."""
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import logging
 import os
@@ -96,6 +97,14 @@ class CompanionConfig:
     mic: MicConfig = field(default_factory=MicConfig)
     participant_screenshot: bool = True
     participant_followup_seconds: float = 120.0
+    record_hotkey: str = "ctrl+alt+r"         # desktop app: start / stop recording
+    mark_hotkey: str = "ctrl+alt+m"           # desktop app: mark this moment
+
+
+# What the desktop app's Settings writes to .env; each wins over its companion.toml value (the UI never
+# rewrites companion.toml, so its comments and custom rules survive).
+ENV_OVERRIDES = {"HOTKEY_POPUP": "picker_hotkey", "HOTKEY_SCREENSHOT": "hotkey", "HOTKEY_RECORD": "record_hotkey",
+                 "HOTKEY_MARK": "mark_hotkey"}
 
 
 def _compile(pattern: str | None, where: str) -> re.Pattern | None:
@@ -171,6 +180,13 @@ def load_config(path: str | Path | None = None) -> CompanionConfig:
     cfg.participant_screenshot = bool(pop.get("participant_screenshot", cfg.participant_screenshot))
     cfg.participant_followup_seconds = float(pop.get("participant_followup_seconds",
                                                      cfg.participant_followup_seconds))
+    for key, attr in ENV_OVERRIDES.items():
+        if (value := os.getenv(key)) is not None:
+            setattr(cfg, attr, value.strip())             # "" turns the shortcut off, as in the TOML
+    if os.getenv("HOTKEY_PAUSE") is not None:
+        cfg.gpu = dataclasses.replace(cfg.gpu, hotkey=os.environ["HOTKEY_PAUSE"].strip())
+    if os.getenv("RECORDINGS_FOLDER"):
+        cfg.recordings_folder = expand_path(os.environ["RECORDINGS_FOLDER"])
     return cfg
 
 
@@ -603,13 +619,37 @@ class PickerStartup:
         log.info("Client picker ready.")
 
 
+def take_participant_shot(companion: Companion, cfg: CompanionConfig, capture_dir: Path,
+                          label: str = "participants", asked: bool = False) -> None:
+    """Whole-desktop screenshot, attached to the meeting so the vision model can read who is in it. `asked`: the
+    user pressed a button for it, so the automatic-screenshot setting does not apply."""
+    from .meeting_signals import capture_desktop
+
+    if not cfg.participant_screenshot and not asked:
+        return
+    try:
+        path = capture_desktop(capture_dir, label)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Could not take the participant screenshot: %s", e)
+        return
+    try:
+        companion.shots.add_capture(path, kind="participants")
+    except Exception:  # noqa: BLE001
+        log.exception("Could not file the participant screenshot")
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
 def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int:
     vault = Vault(s.vault_path, (s.inbox_dir, s.system_dir))
     if not acquire_lock(vault, s.system / "companion.lock"):
         log.error("The meeting companion is already running (see %s).", s.system / "companion.lock")
         return 1
     from .gpu import show_toast
-    from .meeting_signals import MicWatcher, capture_desktop, foreground_process
+    from .meeting_signals import MicWatcher, foreground_process
 
     store = SessionStore(s.system / "meetings", vault)
     lister = WindowLister()
@@ -625,23 +665,7 @@ def run_companion(s: Settings, cfg: CompanionConfig, hotkey: bool = True) -> int
     capture_dir = home() / "state" / "captures"
 
     def participant_shot(label: str = "participants") -> None:
-        """Whole-desktop screenshot, attached to the meeting so the vision model can read who is in it."""
-        if not cfg.participant_screenshot:
-            return
-        try:
-            path = capture_desktop(capture_dir, label)
-        except Exception as e:  # noqa: BLE001
-            log.warning("Could not take the participant screenshot: %s", e)
-            return
-        try:
-            companion.shots.add_capture(path, kind="participants")
-        except Exception:  # noqa: BLE001
-            log.exception("Could not file the participant screenshot")
-        finally:
-            try:
-                path.unlink()
-            except OSError:
-                pass
+        take_participant_shot(companion, cfg, capture_dir, label)
 
     def followup_shot(session) -> None:
         """People who join late: one more screenshot, only if the meeting window is in front."""

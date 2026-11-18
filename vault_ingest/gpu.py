@@ -669,6 +669,14 @@ class WorkGate:
             raise GpuInterrupted("GPU hold")
 
 
+def make_manager(settings, **kw) -> "ModelManager":
+    """The model manager for this engine: llama-server for the built-in one, else LM Studio's `lms`."""
+    if settings.effective_mode == "local" and getattr(settings, "local_engine", "lmstudio") == "builtin":
+        from .llama_server import LlamaServerManager
+        return LlamaServerManager(settings, **kw)
+    return ModelManager(settings, **{k: v for k, v in kw.items() if k not in ("root", "catalogue")})
+
+
 def finish_chat(manager: "ModelManager", *, more_waiting: bool, interrupted: bool) -> None:
     """Drop the chat model after a failed job, an interrupt, or the last job in the queue."""
     if interrupted or not more_waiting:
@@ -696,7 +704,8 @@ class ModelManager:
 
     @property
     def managing(self) -> bool:
-        return self.s.effective_mode == "local" and bool(getattr(self.s, "local_manage_models", True))
+        return (self.s.effective_mode == "local" and bool(getattr(self.s, "local_manage_models", True))
+                and getattr(self.s, "local_engine", "lmstudio") != "server")
 
     def ours_loaded(self) -> bool:
         if self.whisper_active:
@@ -1094,7 +1103,7 @@ class GpuService:
         self.rules = rules
         self.vault = vault
         self.is_companion = is_companion
-        self.manager = ModelManager(settings)
+        self.manager = make_manager(settings)
         self.manager.gate = WorkGate()
         self.gate = self.manager.gate
         self.store = GpuStateStore(Path(settings.system) / STATE_NAME)

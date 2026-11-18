@@ -78,7 +78,19 @@ Run these from this folder:
 
 `reprocess --all-local` finds every call in `_System/ingest-log.json` that was written in local mode, tells you how many there are, and asks before doing anything. It uses the **current** mode, so run `mode cloud` first if you want Claude to redo them.
 
-`serve` is the engine for the desktop app: a local API on `127.0.0.1` (a free port, chosen at start) with a live event stream. It runs meeting detection without the popup and tray, and starts `watch` itself, so stop the "Meeting companion" and "Vault ingest watcher" tasks first. When it is ready it prints `@@ ready {"port": 51181, "token": "..."}`. Every request needs that token: open `http://127.0.0.1:<port>/status?token=<token>` or `/meetings?token=<token>` in a browser, and follow `/events?token=<token>` with `curl -N` to see calls being detected and files being processed. The other paths are `/sessions/current`, `/sessions/<id>` and `/clients?q=`. Ctrl+C stops it. It needs Starlette and uvicorn; run `pip install -e ".[dev]"` again after updating.
+`serve` is the engine for the desktop app: a local API on `127.0.0.1` (a free port, chosen at start) with a live event stream. It runs meeting detection without the popup and tray, and starts `watch` itself, so stop the "Meeting companion" and "Vault ingest watcher" tasks first. When it is ready it prints `@@ ready {"port": 51181, "token": "..."}`. Every request needs that token in a header, `Authorization: Bearer <token>`; only `/events` also takes it in the URL (`?token=<token>`), because a browser's event stream cannot send headers. So a plain browser address bar no longer works for the other paths; use `curl.exe -H "Authorization: Bearer <token>" http://127.0.0.1:<port>/status` (or `/meetings`), and follow `curl.exe -N "http://127.0.0.1:<port>/events?token=<token>"` to see calls being detected and files being processed. The other paths are `/sessions/current`, `/sessions/<id>`, `/clients?q=` and `/notes?path=<note inside the vault>.md` (one note, read-only). Ctrl+C stops it. It needs Starlette and uvicorn; run `pip install -e ".[dev]"` again after updating.
+
+## Desktop app (in development)
+
+The desktop app in `app/` (Tauri + React) starts `serve` itself and shows your meetings and their notes. It is not released yet. To run it from this checkout on Windows you need Rust with the C++ build tools ([docs/phase-0-checks.md](docs/phase-0-checks.md#installing-rust-on-windows)), Node.js 22, and the `.venv` from the quick start with `pip install -e ".[dev]"`. Stop the "Meeting companion" and "Vault ingest watcher" tasks first, then:
+
+```powershell
+cd app
+npm ci
+npm run tauri dev
+```
+
+In development the app runs the engine with `.venv\Scripts\python.exe` and this folder's `.env`; set `VAULT_INGEST_ENGINE` to another Python to use that instead. Closing the window keeps the app in the tray; Quit there stops the engine too. The installer that CI builds (`vault-ingest-windows-setup`) keeps its settings in `%LOCALAPPDATA%\io.github.jamthefrogg.vault-ingest\`: put a `.env` with at least `VAULT_PATH` there before the first start. To try the UI in a browser instead, start `vault-ingest serve` with `VAULT_INGEST_TOKEN` set, run `npm run dev` in `app\`, and open `http://localhost:1420/?port=<port>&token=<token>`.
 
 ## Cloud vs local
 

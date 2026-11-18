@@ -34,8 +34,8 @@ Repository = "https://github.com/JamTheFrogg/vault-ingest"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "vault-ingest[app]"]
-# `vault-ingest serve`: the local API for the desktop app
-app = ["starlette>=0.37", "uvicorn>=0.30"]
+# `vault-ingest serve` (the local API for the desktop app) and the vault MCP server for AI tools
+app = ["starlette>=0.37", "uvicorn>=0.30", "mcp>=2.3,<3", "numpy>=1.26"]
 transcribe = [
   "faster-whisper>=1.1",
   "nvidia-cublas-cu12",

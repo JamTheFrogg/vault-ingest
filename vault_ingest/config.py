@@ -24,6 +24,7 @@ DEFAULT_ENV_FILE = home() / ".env"
 
 LLM_MODES = ("cloud", "local")
 LOCAL_PROVIDERS = ("openai_compat", "lmstudio", "ollama")
+LOCAL_ENGINES = ("builtin", "lmstudio", "server")   # llama-server started by the app | LM Studio | any address
 
 
 def _int(name: str, default: int) -> int:
@@ -73,6 +74,11 @@ class Settings:
     local_context: int = 8192               # context length passed to `lms load` in local mode
     local_thinking: bool = False            # reasoning on the call note; profile updates stay off so the answer is JSON
     local_manage_models: bool = True        # load and unload the chat model; embeddings are never touched
+    local_engine: str = "lmstudio"          # builtin | lmstudio | server (Ollama or any OpenAI-compatible address)
+    auto_record: bool = False               # record every detected call; per computer, as .env is
+    hide_popup_from_sharing: bool = True    # keep the call popup out of screen sharing where the OS allows
+    mic_device: str = "default"             # default | communications | a device id from the desktop app
+    mic_device_name: str = ""               # the picked device's name, found by name when its id changed
     prompts_dir: Path = field(default_factory=lambda: PROJECT_DIR / "prompts")
 
     # ---- vault layout (relative to vault root) ----
@@ -163,15 +169,24 @@ def load_settings(env_file: str | Path | None = None, **overrides) -> Settings:
         local_context=_int("LOCAL_CONTEXT", 8192),
         local_thinking=_bool("LOCAL_THINKING", False),
         local_manage_models=_bool("LOCAL_MANAGE_MODELS", True),
+        local_engine=(os.getenv("LOCAL_ENGINE") or "lmstudio").strip().lower(),
+        auto_record=_bool("AUTO_RECORD", False),
+        hide_popup_from_sharing=_bool("HIDE_POPUP_FROM_SHARING", True),
+        mic_device=(os.getenv("MIC_DEVICE") or "default").strip(),
+        mic_device_name=(os.getenv("MIC_DEVICE_NAME") or "").strip(),
     )
     if s.transcript_source not in ("whisper", "meetily"):
         raise SystemExit("TRANSCRIPT_SOURCE must be 'whisper' or 'meetily' "
                          f"(got {s.transcript_source!r}).")
+    if s.local_engine not in LOCAL_ENGINES:
+        raise SystemExit(f"LOCAL_ENGINE must be one of {', '.join(LOCAL_ENGINES)} (got {s.local_engine!r}).")
     if mode == "cloud":
         s.llm_provider = "anthropic"
     elif mode == "local":
         s.llm_provider = "openai_compat"
-        s.llm_model = (os.getenv("LOCAL_MODEL") or "auto").strip()
+        # the built-in engine keeps its own key, so LOCAL_MODEL (an LM Studio model id) survives a switch back
+        model_key = "BUILTIN_MODEL" if s.local_engine == "builtin" else "LOCAL_MODEL"
+        s.llm_model = (os.getenv(model_key) or "auto").strip()
         s.openai_compat_base_url = os.getenv("LOCAL_BASE_URL") or "http://localhost:1234/v1"
         s.llm_concurrency = _int("LOCAL_CONCURRENCY", 1)
         s.llm_timeout = _float("LOCAL_TIMEOUT", 900.0)
@@ -183,13 +198,22 @@ def load_settings(env_file: str | Path | None = None, **overrides) -> Settings:
     return s
 
 
-_MODE_LINE_RE = re.compile(r"^(\ufeff?[ \t]*(?:export[ \t]+)?LLM_MODE[ \t]*=[ \t]*)(\S*)(.*)$")
-
-
 def set_llm_mode(env_file: str | Path, mode: str) -> Path:
     """Rewrite only the LLM_MODE line of a .env file (added if missing). Atomic; other bytes stay as they were."""
     if mode not in LLM_MODES:
         raise ValueError(f"mode must be one of {LLM_MODES}")
+    return set_env_key(env_file, "LLM_MODE", mode)
+
+
+def set_env_key(env_file: str | Path, key: str, value: str) -> Path:
+    """Rewrite only the `key=` line of a .env file (added if missing), keeping a trailing comment. Atomic; other
+    bytes stay as they were. Values with spaces or `#` are quoted."""
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]*", key) or "\n" in value or "\r" in value:
+        raise ValueError(f"bad .env entry {key!r}")
+    if re.search(r"[\s#'\"]", value):
+        # single quotes: python-dotenv reads them literally, so Windows paths keep their backslashes
+        value = "'" + value + "'" if "'" not in value else '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    line_re = re.compile(rf"^(\ufeff?[ \t]*(?:export[ \t]+)?{key}[ \t]*=[ \t]*)('[^']*'|\"[^\"]*\"|\S*)(.*)$")
     path = Path(env_file)
     # surrogateescape round-trips any byte, newline="" keeps \r\n vs \n as-is
     text = ""
@@ -199,19 +223,20 @@ def set_llm_mode(env_file: str | Path, mode: str) -> Path:
     lines = text.splitlines(keepends=True)
     for i, line in enumerate(lines):
         body = line.rstrip("\r\n")
-        m = _MODE_LINE_RE.match(body)
+        m = line_re.match(body)
         if not m:
             continue
         rest = m.group(3) if re.match(r"^[ \t]+#", m.group(3)) else ""
-        lines[i] = m.group(1) + mode + rest + line[len(body):]
+        lines[i] = m.group(1) + value + rest + line[len(body):]
         break
     else:
         newline = "\r\n" if "\r\n" in text else "\n"
         if lines and not lines[-1].endswith(("\n", "\r")):
             lines[-1] += newline
-        lines.append(f"LLM_MODE={mode}{newline}")
+        lines.append(f"{key}={value}{newline}")
     new_text = "".join(lines)
 
+    path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape", newline="") as fh:

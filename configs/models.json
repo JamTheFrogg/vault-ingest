@@ -1,0 +1,137 @@
+{
+  "about": "What the built-in AI downloads. Changing a model is an edit here, not in code. Every file has sha256, or sha256 null and then size_exact says whether size is the exact byte count (checked) or the published rounded size (the download is then checked against the length the server announces).",
+  "llama_cpp": "b12380",
+  "default_chat": "gemma-4-12b",
+  "light_chat": "gemma-4-e4b",
+  "embedding": "bge-m3",
+  "entries": [
+    {
+      "id": "llama-win-cuda", "kind": "llama-server", "os": "windows", "backend": "cuda",
+      "title": "llama.cpp for NVIDIA (CUDA 12.4)", "note": "Release b12380.", "licence": "MIT; CUDA runtime: NVIDIA CUDA EULA (unverified)",
+      "source": "https://github.com/ggml-org/llama.cpp/releases/tag/b12380",
+      "files": [
+        {"name": "llama-b12380-bin-win-cuda-12.4-x64.zip", "size": 319405686, "size_exact": true,
+         "sha256": "a6299bf3e517ff7d43d276444bbd5da4c1286a0a568c08a1a9b7c87ce5aeb412",
+         "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12380/llama-b12380-bin-win-cuda-12.4-x64.zip"},
+        {"name": "cudart-llama-bin-win-cuda-12.4-x64.zip", "size": 391443627, "size_exact": true,
+         "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+         "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12380/cudart-llama-bin-win-cuda-12.4-x64.zip"}
+      ]
+    },
+    {
+      "id": "llama-win-vulkan", "kind": "llama-server", "os": "windows", "backend": "vulkan",
+      "title": "llama.cpp for AMD and Intel graphics (Vulkan)", "note": "Release b12380.", "licence": "MIT",
+      "source": "https://github.com/ggml-org/llama.cpp/releases/tag/b12380",
+      "files": [
+        {"name": "llama-b12380-bin-win-vulkan-x64.zip", "size": 38117943, "size_exact": true,
+         "sha256": "66a0fd3d7e7fda666336d249b164747d8cfbf0c13aa4555decbc557aa9b911d3",
+         "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12380/llama-b12380-bin-win-vulkan-x64.zip"}
+      ]
+    },
+    {
+      "id": "llama-win-cpu", "kind": "llama-server", "os": "windows", "backend": "cpu",
+      "title": "llama.cpp for the processor", "note": "Release b12380.", "licence": "MIT",
+      "source": "https://github.com/ggml-org/llama.cpp/releases/tag/b12380",
+      "files": [
+        {"name": "llama-b12380-bin-win-cpu-x64.zip", "size": 25124554, "size_exact": true,
+         "sha256": "ea968ba15d183896b8b023897e6b4d84ecd66fa05eed720e74d3060e4e1e833b",
+         "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12380/llama-b12380-bin-win-cpu-x64.zip"}
+      ]
+    },
+    {
+      "id": "llama-linux-vulkan", "kind": "llama-server", "os": "linux", "backend": "vulkan",
+      "title": "llama.cpp for graphics cards (Vulkan)", "note": "Release b12380.", "licence": "MIT",
+      "source": "https://github.com/ggml-org/llama.cpp/releases/tag/b12380",
+      "files": [
+        {"name": "llama-b12380-bin-ubuntu-vulkan-x64.tar.gz", "size": 36190881, "size_exact": true,
+         "sha256": "5c01a7a01991c6a855880c16018899a0814bff6facc9f8dd0ae985a794692866",
+         "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12380/llama-b12380-bin-ubuntu-vulkan-x64.tar.gz"}
+      ]
+    },
+    {
+      "id": "llama-linux-cpu", "kind": "llama-server", "os": "linux", "backend": "cpu",
+      "title": "llama.cpp for the processor", "note": "Release b12380.", "licence": "MIT",
+      "source": "https://github.com/ggml-org/llama.cpp/releases/tag/b12380",
+      "files": [
+        {"name": "llama-b12380-bin-ubuntu-x64.tar.gz", "size": 23333771, "size_exact": true,
+         "sha256": "211fd3fae48f2d72e740b9aa72f961a6a8f0e7b73f0d0ed8ff498cb3b74a6233",
+         "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12380/llama-b12380-bin-ubuntu-x64.tar.gz"}
+      ]
+    },
+    {
+      "id": "llama-macos-metal", "kind": "llama-server", "os": "macos", "backend": "metal",
+      "title": "llama.cpp for Apple Silicon (Metal)", "note": "Release b12380.", "licence": "MIT",
+      "source": "https://github.com/ggml-org/llama.cpp/releases/tag/b12380",
+      "files": [
+        {"name": "llama-b12380-bin-macos-arm64.tar.gz", "size": 16922615, "size_exact": true,
+         "sha256": "1889ef442edf0bb6113f428bb0341b87f3ad26a02ef5275ebfd092f443463cca",
+         "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12380/llama-b12380-bin-macos-arm64.tar.gz"}
+      ]
+    },
+    {
+      "id": "gemma-4-12b", "kind": "chat", "alias": "gemma-4-12b",
+      "title": "Gemma 4 12B", "note": "Best notes on this computer. Needs a graphics card with 8 GB or a Mac with 16 GB.",
+      "min_vram_mb": 7500, "min_ram_mb": 16000, "licence": "apache-2.0",
+      "source": "https://huggingface.co/unsloth/gemma-4-12B-it-qat-GGUF",
+      "files": [
+        {"name": "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf", "role": "model", "size": 6720000000, "size_exact": false, "sha256": null,
+         "url": "https://huggingface.co/unsloth/gemma-4-12B-it-qat-GGUF/resolve/main/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf"},
+        {"name": "mmproj-F16.gguf", "role": "mmproj", "size": 175000000, "size_exact": false, "sha256": null,
+         "url": "https://huggingface.co/unsloth/gemma-4-12B-it-qat-GGUF/resolve/main/mmproj-F16.gguf"}
+      ]
+    },
+    {
+      "id": "gemma-4-e4b", "kind": "chat", "alias": "gemma-4-e4b",
+      "title": "Gemma 4 E4B", "note": "Lighter and faster, weaker notes. For smaller graphics cards and the processor.",
+      "min_vram_mb": 0, "min_ram_mb": 8000, "licence": "apache-2.0",
+      "source": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF",
+      "files": [
+        {"name": "gemma-4-E4B-it-Q4_K_M.gguf", "role": "model", "size": 4980000000, "size_exact": false, "sha256": null,
+         "url": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf"},
+        {"name": "mmproj-F16.gguf", "role": "mmproj", "size": 990000000, "size_exact": false, "sha256": null,
+         "url": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/mmproj-F16.gguf"}
+      ]
+    },
+    {
+      "id": "bge-m3", "kind": "embedding", "alias": "bge-m3",
+      "title": "bge-m3", "note": "Search by meaning, in any language. Runs on the processor. Optional.",
+      "licence": "MIT",
+      "source": "https://huggingface.co/lm-kit/bge-m3-gguf",
+      "files": [
+        {"name": "bge-m3-Q8_0.gguf", "role": "model", "size": 635000000, "size_exact": false, "sha256": null,
+         "url": "https://huggingface.co/lm-kit/bge-m3-gguf/resolve/main/bge-m3-Q8_0.gguf"}
+      ]
+    },
+    {
+      "id": "whisper-large-v3", "kind": "whisper", "name": "large-v3",
+      "title": "Whisper large-v3", "note": "Speech to text. Needed with every engine.", "licence": "MIT",
+      "source": "https://huggingface.co/Systran/faster-whisper-large-v3",
+      "files": [
+        {"name": "model.bin", "size": 3090000000, "size_exact": false, "sha256": null,
+         "url": "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/model.bin"},
+        {"name": "config.json", "size": 2400, "size_exact": false, "sha256": null,
+         "url": "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/config.json"},
+        {"name": "preprocessor_config.json", "size": 340, "size_exact": false, "sha256": null,
+         "url": "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/preprocessor_config.json"},
+        {"name": "tokenizer.json", "size": 2480000, "size_exact": false, "sha256": null,
+         "url": "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/tokenizer.json"},
+        {"name": "vocabulary.json", "size": 1070000, "size_exact": false, "sha256": null,
+         "url": "https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main/vocabulary.json"}
+      ]
+    },
+    {
+      "id": "cuda-libs-win", "kind": "gpu-libs", "os": "windows",
+      "title": "NVIDIA libraries for speech to text", "note": "Lets Whisper run on the graphics card.",
+      "licence": "LicenseRef-NVIDIA-Proprietary",
+      "source": "https://pypi.org/project/nvidia-cudnn-cu12/9.28.1.4/",
+      "files": [
+        {"name": "nvidia_cublas_cu12-12.9.2.10-py3-none-win_amd64.whl", "size": 553162896, "size_exact": true,
+         "sha256": "623f43027d40d44ceadf0043f002bd25cf353e8f13ce90b9a87057019f560661",
+         "url": "https://files.pythonhosted.org/packages/20/e2/fc9a0e985249d873150276d5afb02e39a66817fedbf1a385724393e505ed/nvidia_cublas_cu12-12.9.2.10-py3-none-win_amd64.whl"},
+        {"name": "nvidia_cudnn_cu12-9.28.1.4-py3-none-win_amd64.whl", "size": 696300805, "size_exact": true,
+         "sha256": "3467aafa9b260e6adf5fbbfc0e21d180133305b42032aa1160be2d3142bb8b09",
+         "url": "https://files.pythonhosted.org/packages/c7/bd/1d6709d2223e99f04079f16005f8ae6e11a14ee16b5eab6833686cf72fe1/nvidia_cudnn_cu12-9.28.1.4-py3-none-win_amd64.whl"}
+      ]
+    }
+  ]
+}

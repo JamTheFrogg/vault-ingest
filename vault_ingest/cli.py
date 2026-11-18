@@ -453,6 +453,14 @@ def check(args) -> int:
         from .llm import make_llm
         from .schemas import ClientGuess
 
+        if s.effective_mode == "local" and s.local_engine == "builtin":
+            from .llama_server import setup_check
+
+            result = setup_check(s)                # starts llama-server, one answer, stops it again
+            if not result["ok"]:
+                raise LLMUnavailable(result["message"])
+            print(f"  ✔ LLM answered — model {result['model']} (built-in, {result['tokens_per_sec']} tok/s)")
+            return 0 if ok else 1
         llm = make_llm(s)
         g = llm.complete_json("You answer with JSON only.",
                               'Return client "Test", confidence 1, reason "ok".', ClientGuess)
@@ -606,9 +614,9 @@ def transcribe_cmd(args) -> int:
         return 1
     glossary = read_glossary(s.system / "Glossary.md")
     prompt = build_initial_prompt(glossary, _client_names(s))
-    from .gpu import ModelManager, activate
+    from .gpu import activate, make_manager
 
-    manager = ModelManager(s)
+    manager = make_manager(s)
     activate(manager)
     try:
         return _transcribe_loaded(args, s, audio, prompt, manager)
@@ -813,7 +821,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def bench_cmd(args) -> int:
     """One chunk digest on a built-in sample. Prints tokens/sec and dedicated-VRAM headroom."""
-    from .gpu import ModelManager, fits_in_dedicated
+    from .gpu import fits_in_dedicated, make_manager
     from .llm import BENCH_SYSTEM, BENCH_USER, LLMError, LocalStudioLLM, NoModelLoaded
     from .schemas import ChunkDigest
 
@@ -823,7 +831,7 @@ def bench_cmd(args) -> int:
     if s.effective_mode != "local":
         print("bench runs in local mode. Switch with: vault-ingest mode local")
         return 1
-    manager = ModelManager(s)
+    manager = make_manager(s)
     model = None
     st = None
     used = total = None
@@ -891,14 +899,14 @@ def pending_cmd(args) -> int:
 
 def gpu_cmd(args) -> int:
     """Unload the managed chat model and pause, or show what the GPU is doing. Logged to ingest.log."""
-    from .gpu import (STATE_NAME, GpuStateStore, ModelManager, append_digest, format_status, show_toast)
+    from .gpu import (STATE_NAME, GpuStateStore, append_digest, format_status, make_manager, show_toast)
     from .vault import Vault
 
     overrides = {"vault_path": args.vault} if getattr(args, "vault", None) else {}
     s = load_settings(args.env, **overrides)
     setup_logging(s.system / "ingest.log", args.verbose)
     vault = Vault(s.vault_path, (s.inbox_dir, s.system_dir))
-    manager = ModelManager(s)
+    manager = make_manager(s)
     store = GpuStateStore(s.system / STATE_NAME)
     if args.gpu_cmd == "status":
         lines = format_status(manager, store.load())

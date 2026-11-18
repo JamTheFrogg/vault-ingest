@@ -186,6 +186,10 @@ def add_nvidia_dll_directories() -> list[Path]:
         return []
     import sys
 
+    from .models import add_gpu_libs
+
+    add_gpu_libs()
+
     added = []
     seen = {str(p).lower() for p in added}
     for entry in sys.path:
@@ -244,6 +248,13 @@ def _compat_pyav() -> None:
     av.open = open_compat
 
 
+def whisper_source(model_name: str) -> str:
+    """The folder the app downloaded the model into, else the name (faster-whisper's own cache)."""
+    from .models import whisper_source as downloaded
+
+    return downloaded(model_name)
+
+
 def load_whisper(model_name: str, device: str):
     """Return (model, device, compute_type). CUDA float16, then int8_float16, then CPU int8."""
     try:
@@ -263,7 +274,7 @@ def load_whisper(model_name: str, device: str):
         for handler in log.handlers:
             handler.flush()
         try:
-            model = WhisperModel(model_name, device=dev, compute_type=compute)
+            model = WhisperModel(whisper_source(model_name), device=dev, compute_type=compute)
         except Exception as e:  # noqa: BLE001  ctranslate2 raises several types for a bad device
             errors.append(f"{dev}/{compute}: {e}")
             log.warning("Whisper could not load on %s/%s: %s", dev, compute, e)
@@ -293,7 +304,7 @@ def load_whisper_exact(model_name: str, device: str, compute_type: str):
     log.info("Loading Whisper %s on %s (%s).", model_name, device, compute_type)
     for handler in log.handlers:
         handler.flush()
-    model = WhisperModel(model_name, device=device, compute_type=compute_type)
+    model = WhisperModel(whisper_source(model_name), device=device, compute_type=compute_type)
     log.info("Whisper %s running on %s (%s).", model_name, device, compute_type)
     return model, device, compute_type
 
@@ -718,7 +729,32 @@ def comparison_markdown(texts: dict[str, str], title: str) -> str:
     return f"# {title}\n\nFirst 5 minutes, one column per language.\n\n{header}\n{rule}\n" + "\n".join(rows) + "\n"
 
 
-# ------------------------------------------------------------------ Meetily recording queue
+# ------------------------------------------------------------------ recording queue
+RECORDER_INFO = "recording.json"
+ABANDONED_SECONDS = 600
+
+
+def recording_audio(folder: Path) -> Path | None:
+    """The file to transcribe: the desktop app's `mic.wav` (with `system.wav` beside it; `audio_tracks` labels
+    the two), else Meetily's `audio.mp4`."""
+    for name in ("mic.wav", "audio.mp4"):
+        if (folder / name).is_file():
+            return folder / name
+    return None
+
+
+def recorder_finished(folder: Path) -> bool | None:
+    """`recording.json` from the desktop app: True once both tracks are complete, False while it records, None
+    without the file (Meetily: the size check decides)."""
+    try:
+        data = json.loads((folder / RECORDER_INFO).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return bool(data.get("finished"))
+
+
 @dataclass
 class PendingAudio:
     folder: Path
@@ -727,7 +763,8 @@ class PendingAudio:
 
 
 class RecordingQueue:
-    """Watch Meetily's recordings folder. Copy nothing: transcribe `audio.mp4` in place and write a transcript to the inbox."""
+    """Watch the recordings folder (the desktop app's, or Meetily's). Copy nothing: transcribe in place and write a
+    transcript to the inbox."""
 
     def __init__(self, folder: Path, inbox: Path, state_path, vault, settings, settle_seconds: float = 30,
                  clock: Callable[[], float] = time.time, clients: Callable[[], list[str]] | None = None,
@@ -777,7 +814,7 @@ class RecordingQueue:
     def poll(self) -> None:
         if not self.folder.is_dir():
             if not self._missing:
-                log.warning("Meetily recordings folder not found: %s", self.folder)
+                log.warning("Recordings folder not found: %s", self.folder)
                 self._missing = True
             return
         self._missing = False
@@ -793,19 +830,30 @@ class RecordingQueue:
             key = str(folder)
             if key in done or key in self.inflight or key in failed:
                 continue
-            audio = folder / "audio.mp4"
-            if not audio.is_file():
+            audio = recording_audio(folder)
+            if audio is None:
                 continue
             size = audio.stat().st_size
-            seen = self.pending.get(key)
-            if seen is None or seen.size != size:
-                self.pending[key] = PendingAudio(folder, size, now)
-                continue
-            if size > 0 and now - seen.since >= self.settle:
+            finished = recorder_finished(folder)
+            if not finished:
+                seen = self.pending.get(key)
+                if seen is None or seen.size != size:
+                    self.pending[key] = PendingAudio(folder, size, now)
+                    continue
+                # still marked as recording: only a recorder that died leaves files this still for this long
+                wait = self.settle if finished is None else max(self.settle, ABANDONED_SECONDS)
+                if now - seen.since < wait:
+                    continue
+            if size > 0:
                 self.inflight.add(key)
                 self.pending.pop(key, None)
                 self._jobs.append(folder)
                 self._wake.set()
+
+    def states(self) -> dict[str, str]:
+        """Folder -> `waiting` (queued) or `transcribing`, for every recording taken but not written yet."""
+        queued = {str(f) for f in self._jobs}
+        return {key: "waiting" if key in queued else "transcribing" for key in list(self.inflight)}
 
     def _worker(self) -> None:
         from .gpu import GpuInterrupted
@@ -864,7 +912,7 @@ class RecordingQueue:
         while dest.exists():
             dest = self.inbox / f"{Path(name).stem} ({n}).txt"
             n += 1
-        audio = folder / "audio.mp4"
+        audio = recording_audio(folder)
         log.info("Transcribing %s", audio)
         glossary = read_glossary(self.settings.vault_path / self.settings.system_dir / "Glossary.md")
         prompt = build_initial_prompt(glossary, self.clients())

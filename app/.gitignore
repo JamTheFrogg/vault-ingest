@@ -1,0 +1,7 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+# made by scripts/build_engine.py --out app/src-tauri/engine
+src-tauri/engine/
+*.tsbuildinfo

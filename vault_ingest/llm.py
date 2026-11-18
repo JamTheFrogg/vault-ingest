@@ -394,21 +394,33 @@ class LocalStudioLLM(LLM):
 
     def __init__(self, s: Settings, auto_start: bool = True, transport: httpx.BaseTransport | None = None):
         self.s = s
-        self.base = s.openai_compat_base_url.rstrip("/")
-        self.root = re.sub(r"/v1$", "", self.base)
         configured = (s.llm_model or "auto").strip()
         self.model: str | None = None if configured.lower() == "auto" else configured
         self.auto_start = auto_start
         self.structured = True                 # flipped off for the rest of the run if the server rejects json_schema
         self._reasoning_ok = True              # flipped off if the server rejects reasoning_effort
         self.last_stats = CompletionStats()
-        self.manage_models = bool(getattr(s, "local_manage_models", True))
+        # `ttl` is LM Studio's; the built-in llama-server is stopped by the app instead
+        self.manage_models = bool(getattr(s, "local_manage_models", True)) and \
+            getattr(s, "local_engine", "lmstudio") == "lmstudio"
         self.gate = None                       # WorkGate; closing `http` from another thread cancels the request
         self._lms_tried = False
         self._lock = threading.RLock()
-        self._client_kwargs = dict(timeout=s.llm_timeout, transport=transport,
-                                   headers={"Authorization": f"Bearer {s.openai_compat_api_key}"})
+        self._client_kwargs = dict(timeout=s.llm_timeout, transport=transport, auth=self._auth)
         self.http = httpx.Client(**self._client_kwargs)
+
+    # read per request: the built-in engine's port and key are known only once llama-server has started
+    @property
+    def base(self) -> str:
+        return self.s.openai_compat_base_url.rstrip("/")
+
+    @property
+    def root(self) -> str:
+        return re.sub(r"/v1$", "", self.base)
+
+    def _auth(self, request: httpx.Request) -> httpx.Request:
+        request.headers["Authorization"] = f"Bearer {self.s.openai_compat_api_key}"
+        return request
 
     def _raise_if_held(self) -> None:
         if (self.gate is not None and self.gate.cancel.is_set()) or paused_now(self.s):
@@ -789,7 +801,8 @@ class FakeLLM(LLM):
 
 def make_llm(s: Settings) -> LLM:
     if s.llm_mode == "local":
-        return LocalStudioLLM(s)
+        # `lms server start` on an outage only makes sense for LM Studio
+        return LocalStudioLLM(s, auto_start=getattr(s, "local_engine", "lmstudio") == "lmstudio")
     if s.llm_mode == "cloud":
         return AnthropicLLM(s)
     providers = {"anthropic": AnthropicLLM, "ollama": OllamaLLM, "openai_compat": OpenAICompatLLM,

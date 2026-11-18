@@ -218,6 +218,79 @@ def _is_placeholder(line: str) -> bool:
     return bool(re.match(r"^- (\[ \] )?(YYYY-MM-DD|item —)", l))
 
 
+def heading_bounds(text: str, heading: str) -> tuple[int, int, int] | None:
+    """(heading_start, body_start, body_end) for a heading of any level, given as "Log" or "## Log". The body ends
+    at the next heading of any level, so a patch never moves or replaces a sub-section."""
+    target = re.sub(r"^#{1,6}\s+", "", heading.strip()).strip()
+    if not target:
+        return None
+    m = re.search(rf"^(#{{1,6}})[ \t]+{re.escape(target)}[ \t]*#*[ \t]*$", text, re.M | re.I)
+    if not m:
+        return None
+    body_start = m.end() + 1 if m.end() < len(text) else m.end()
+    nxt = re.compile(r"^#{1,6}[ \t]+\S", re.M).search(text, body_start)
+    return m.start(), body_start, nxt.start() if nxt else len(text)
+
+
+def patch_section(text: str, heading: str, operation: str, content: str) -> str | None:
+    """`append` / `prepend` `content` inside the section under `heading`, or `replace` its body; None when the
+    heading is not there."""
+    b = heading_bounds(text, heading)
+    if not b:
+        return None
+    head, body, after = text[:b[1]], text[b[1]:b[2]], text[b[2]:]
+    if not head.endswith("\n"):
+        head += "\n"
+    add = content.strip("\n")
+    if operation == "prepend":
+        body = add + "\n" + (body.lstrip("\n") if body.strip() else "")
+    elif operation == "append":
+        body = (body.rstrip("\n") + "\n" if body.strip() else "") + add + "\n"
+    else:
+        body = add + "\n"
+    return head + body.rstrip("\n") + "\n" + ("\n" + after.lstrip("\n") if after else "")
+
+
+def set_frontmatter_value(text: str, key: str, value) -> str:
+    """Set `key` to any YAML value (written on one line), keeping the rest of the frontmatter as written."""
+    line = f"{key}: " + yaml.safe_dump(value, default_flow_style=True, allow_unicode=True, width=10**6) \
+        .strip().removesuffix("...").strip()
+    fm, body = split_frontmatter(text)
+    if not fm:
+        return f"---\n{line}\n---\n{body}"
+    lines, out, i, found = fm.split("\n"), [], 0, False
+    while i < len(lines):
+        if not found and re.match(rf"^{re.escape(key)}\s*:", lines[i]):
+            found = True
+            out.append(line)
+            i += 1
+            while i < len(lines) and (lines[i].startswith((" ", "\t", "- ")) or lines[i] == "-"):
+                i += 1                                          # the old value's block lines
+            continue
+        out.append(lines[i])
+        i += 1
+    if not found:
+        close = max(j for j, x in enumerate(out) if x.strip() == "---")
+        out.insert(close, line)
+    return "\n".join(out) + body
+
+
+def remove_frontmatter_key(text: str, key: str) -> str:
+    fm, body = split_frontmatter(text)
+    lines, out, i = fm.split("\n"), [], 0
+    while i < len(lines):
+        if re.match(rf"^{re.escape(key)}\s*:", lines[i]):
+            i += 1
+            while i < len(lines) and (lines[i].startswith((" ", "\t", "- ")) or lines[i] == "-"):
+                i += 1
+            continue
+        out.append(lines[i])
+        i += 1
+    if all(x.strip() in ("---", "") for x in out):
+        return body                                             # the last key: no empty block left behind
+    return "\n".join(out) + body
+
+
 def list_entries(section_body: str) -> list[str]:
     return [l for l in section_body.split("\n") if re.match(r"^\s*- ", l) and not _is_placeholder(l)]
 

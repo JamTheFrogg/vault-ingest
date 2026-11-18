@@ -141,3 +141,53 @@ def settings(vault: Path) -> Settings:
 def make_pipeline(settings, responder=None, dry_run=False):
     llm = None if dry_run else FakeLLM(responder or fake_responder())
     return Pipeline(settings, llm, dry_run=dry_run, concurrency=2)
+
+
+# ---------------------------------------------------------------- a fake embedding server (llama-server's API)
+CONCEPTS = {"money": ("invoice", "invoices", "payment", "paid", "pay", "budget", "euros", "price", "racun"),
+            "deploy": ("staging", "server", "deploy", "release", "hosting"),
+            "rest": ("holiday", "vacation", "leave", "break"),
+            "design": ("logo", "brand", "colours", "font", "design")}
+
+
+def fake_vector(text: str) -> list[float]:
+    """One dimension per concept and one for every other word: similar meaning, similar vector."""
+    words = re.findall(r"\w+", text.lower())
+    vec = [float(sum(w in group for w in words)) for group in CONCEPTS.values()]
+    return vec + [0.1 * len([w for w in words if not any(w in g for g in CONCEPTS.values())]) ** 0.5 or 0.01]
+
+
+@pytest.fixture
+def fake_embedder():
+    """An OpenAI-compatible /v1/embeddings server on a free port; `.requests` counts the texts it embedded."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.send_response(200 if self.path == "/health" else 404)
+            self.end_headers()
+
+        def do_POST(self):
+            data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            texts = data["input"] if isinstance(data["input"], list) else [data["input"]]
+            server.requests.extend(texts)
+            body = json.dumps({"data": [{"index": i, "embedding": fake_vector(t)} for i, t in enumerate(texts)],
+                               "model": data.get("model")}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.requests = []
+    server.url = f"http://127.0.0.1:{server.server_address[1]}/v1"
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.shutdown()
+    server.server_close()
